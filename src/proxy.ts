@@ -1,13 +1,19 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: {
+        // Keep cookies from growing unbounded
+        maxAge: 60 * 60 * 24 * 7, // 7 days
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll()
@@ -23,13 +29,13 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refresh session
+  // IMPORTANT: getUser() refreshes the session and re-writes cookies.
+  // Do not add logic between createServerClient and getUser().
   const { data: { user } } = await supabase.auth.getUser()
 
   const { pathname } = request.nextUrl
 
-  // Public paths
-  const publicPaths = ['/', '/sign-in', '/auth/callback']
+  const publicPaths = ['/', '/sign-in', '/auth/callback', '/clear-session']
   const isPublic = publicPaths.some(p => pathname === p || pathname.startsWith('/auth/'))
 
   if (!user && !isPublic) {
