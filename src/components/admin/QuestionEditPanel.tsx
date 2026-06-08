@@ -77,7 +77,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
   const options = (form.options ?? []) as MCQOption[]
 
   return (
-    <div className="w-96 shrink-0 bg-surface border border-border rounded-lg p-5 max-h-[calc(100vh-120px)] overflow-y-auto">
+    <div className="w-96 shrink-0 bg-surface border border-border rounded-xl p-5 max-h-[calc(100vh-120px)] overflow-y-auto">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-serif text-lg text-primary">Edit Question</h3>
         <button onClick={onClose} className="text-secondary hover:text-primary transition text-sm">✕</button>
@@ -90,7 +90,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
           <select
             value={form.topic_id ?? ''}
             onChange={e => setForm(f => ({ ...f, topic_id: e.target.value || null }))}
-            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded text-sm focus:border-accent focus:outline-none"
+            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none"
           >
             <option value="">— Select topic —</option>
             {topics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -104,7 +104,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
             <select
               value={form.type}
               onChange={e => setForm(f => ({ ...f, type: e.target.value as Question['type'] }))}
-              className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded text-sm focus:border-accent focus:outline-none"
+              className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none"
             >
               <option value="mcq">MCQ</option>
               <option value="flashcard">Flashcard</option>
@@ -115,7 +115,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
             <select
               value={form.difficulty ?? ''}
               onChange={e => setForm(f => ({ ...f, difficulty: (e.target.value || null) as Question['difficulty'] }))}
-              className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded text-sm focus:border-accent focus:outline-none"
+              className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none"
             >
               <option value="">— Select —</option>
               <option value="easy">Easy</option>
@@ -132,7 +132,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
             value={form.prompt}
             onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
             rows={4}
-            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded text-sm focus:border-accent focus:outline-none resize-none"
+            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none resize-none"
           />
         </div>
 
@@ -147,7 +147,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
                   <input
                     value={opt.text}
                     onChange={e => updateOption(i, e.target.value)}
-                    className="flex-1 bg-surface2 border border-border text-primary px-2 py-1.5 rounded text-xs focus:border-accent focus:outline-none"
+                    className="flex-1 bg-surface2 border border-border text-primary px-2 py-1.5 rounded-lg text-xs focus:border-accent focus:outline-none"
                   />
                 </div>
               ))}
@@ -158,7 +158,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
               <select
                 value={form.correct_answer ?? ''}
                 onChange={e => setForm(f => ({ ...f, correct_answer: e.target.value || null }))}
-                className="bg-surface2 border border-border text-primary px-3 py-1.5 rounded text-sm focus:border-accent focus:outline-none"
+                className="bg-surface2 border border-border text-primary px-3 py-1.5 rounded-lg text-sm focus:border-accent focus:outline-none"
               >
                 <option value="">— Select —</option>
                 {['A', 'B', 'C', 'D', 'E'].map(l => <option key={l} value={l}>{l}</option>)}
@@ -174,7 +174,7 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
             value={form.explanation ?? ''}
             onChange={e => setForm(f => ({ ...f, explanation: e.target.value }))}
             rows={6}
-            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded text-sm focus:border-accent focus:outline-none resize-none"
+            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none resize-none"
           />
         </div>
 

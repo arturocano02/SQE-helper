@@ -50,15 +50,15 @@ export default async function ProgressPage() {
       <div className="max-w-4xl mx-auto px-6 py-10 space-y-10">
         {/* Summary stats */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          <div className="bg-surface border border-border rounded-lg p-5 text-center">
+          <div className="bg-surface border border-border rounded-xl p-5 text-center">
             <p className="font-serif text-4xl text-primary">{totalSessions}</p>
             <p className="text-secondary text-sm mt-1">Sessions completed</p>
           </div>
-          <div className="bg-surface border border-border rounded-lg p-5 text-center">
+          <div className="bg-surface border border-border rounded-xl p-5 text-center">
             <p className="font-serif text-4xl text-primary">{avgScore}%</p>
             <p className="text-secondary text-sm mt-1">Average score</p>
           </div>
-          <div className="bg-surface border border-border rounded-lg p-5 text-center">
+          <div className="bg-surface border border-border rounded-xl p-5 text-center">
             <p className="font-serif text-4xl text-primary">
               {topicsWithMastery.filter(t => (t.mastery?.mastery_score ?? 0) >= 70).length}
             </p>

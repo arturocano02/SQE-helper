@@ -11,7 +11,7 @@ export async function GET() {
   const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single()
   if (!profile?.is_admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const admin = await createAdminClient()
+  const admin = createAdminClient()
   const { data } = await admin.from('questions').select('*').order('created_at', { ascending: false })
   return NextResponse.json(data ?? [])
 }
@@ -26,7 +26,7 @@ export async function PUT(request: Request) {
   if (!profile?.is_admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const admin = await createAdminClient()
+  const admin = createAdminClient()
 
   const { data, error } = await admin
     .from('questions')
@@ -59,7 +59,7 @@ export async function PATCH(request: Request) {
   if (!profile?.is_admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const { ids, status }: { ids: string[]; status: QuestionStatus } = await request.json()
-  const admin = await createAdminClient()
+  const admin = createAdminClient()
 
   const { error } = await admin
     .from('questions')

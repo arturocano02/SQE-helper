@@ -158,7 +158,7 @@ export default function OnboardingPage() {
                   type="date"
                   value={examDate}
                   onChange={e => setExamDate(e.target.value)}
-                  className="bg-surface2 border border-border text-primary px-3 py-2 rounded focus:border-accent focus:outline-none w-full"
+                  className="bg-surface2 border border-border text-primary px-3 py-2 rounded-lg focus:border-accent focus:outline-none w-full"
                 />
               </div>
 
@@ -177,7 +177,7 @@ export default function OnboardingPage() {
                       key={opt.value}
                       onClick={() => setPrepLevel(opt.value)}
                       className={[
-                        'px-4 py-3 rounded border text-sm text-left transition',
+                        'px-4 py-3 rounded-lg border text-sm text-left transition',
                         prepLevel === opt.value
                           ? 'bg-accent-dim border-accent text-accent'
                           : 'bg-surface2 border-border text-secondary hover:bg-surface',
@@ -221,7 +221,7 @@ export default function OnboardingPage() {
                         <button
                           onClick={() => toggleTopic(topic.id)}
                           className={[
-                            'w-full text-left px-4 py-3 rounded border transition',
+                            'w-full text-left px-4 py-3 rounded-lg border transition',
                             isCovered
                               ? 'bg-accent-dim border-accent text-accent'
                               : 'bg-surface2 border-border text-secondary hover:bg-surface',
@@ -230,16 +230,19 @@ export default function OnboardingPage() {
                           {topic.name}
                         </button>
                         {isCovered && (
-                          <div className="flex gap-2 mt-1 ml-4">
+                          <div className="flex gap-2 mt-2 ml-1">
+                            <span className="text-xs text-muted self-center">Confidence:</span>
                             {(['shaky', 'okay', 'solid'] as Confidence[]).map(conf => (
                               <button
                                 key={conf}
-                                onClick={() => setConfidence(topic.id, conf)}
+                                onClick={e => { e.stopPropagation(); setConfidence(topic.id, conf) }}
                                 className={[
-                                  'px-3 py-1 rounded text-xs border transition capitalize',
+                                  'px-4 py-1.5 rounded-lg text-xs font-medium border transition capitalize',
                                   cov?.confidence === conf
-                                    ? 'bg-accent text-bg border-accent'
-                                    : 'bg-surface border-border text-secondary hover:bg-surface2',
+                                    ? conf === 'shaky' ? 'bg-error/20 border-error text-error'
+                                      : conf === 'okay' ? 'bg-warning/20 border-warning text-warning'
+                                      : 'bg-success/20 border-success text-success'
+                                    : 'bg-surface2 border-border text-secondary hover:bg-surface hover:text-primary',
                                 ].join(' ')}
                               >
                                 {conf}
@@ -275,14 +278,14 @@ export default function OnboardingPage() {
             </p>
 
             {/* What gets uploaded clarification */}
-            <div className="bg-surface2 border border-border rounded-lg p-4 mb-6 text-sm text-secondary space-y-1">
+            <div className="bg-surface2 border border-border rounded-xl p-4 mb-6 text-sm text-secondary space-y-1">
               <p>✓ Your notes are <strong className="text-primary">private to you</strong> — they are never added to the shared question bank</p>
               <p>✓ We extract weak areas and seed your mastery scores — nothing more</p>
               <p>✓ You can also upload more notes later from your profile</p>
             </div>
 
             {!importDone ? (
-              <div className="bg-surface border border-border rounded-lg p-6">
+              <div className="bg-surface border border-border rounded-xl p-6">
                 <label className="block text-sm text-secondary mb-3">
                   Upload a PDF, Word (.docx), or text file
                 </label>
@@ -306,7 +309,7 @@ export default function OnboardingPage() {
                 </div>
               </div>
             ) : (
-              <div className="bg-surface border border-border rounded-lg p-6 text-center">
+              <div className="bg-surface border border-border rounded-xl p-6 text-center">
                 <div className="text-success text-4xl mb-3">✓</div>
                 <p className="text-primary mb-1">Notes imported</p>
                 <p className="text-secondary text-sm mb-6">Your weak areas have been identified. Sessions will start there.</p>

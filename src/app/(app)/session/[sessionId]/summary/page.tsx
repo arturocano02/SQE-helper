@@ -40,7 +40,7 @@ export default async function SessionSummaryPage({ params }: { params: Promise<{
   return (
     <main className="min-h-screen bg-bg flex flex-col items-center justify-center px-4">
       <div className="max-w-md w-full text-center">
-        <div className="bg-surface border border-border rounded-lg p-8 mb-6">
+        <div className="bg-surface border border-border rounded-xl p-8 mb-6">
           <p className="text-secondary text-sm mb-2 uppercase tracking-widest font-sans">Session Complete</p>
           <div className={`font-serif text-7xl font-semibold mb-1 ${grade.color}`}>{pct}%</div>
           <p className={`text-lg mb-1 ${grade.color}`}>{grade.label}</p>

@@ -101,8 +101,9 @@ function DrillLauncherInner() {
             onClick={handleStart}
             disabled={selected.size === 0}
             loading={launching}
+            size="lg"
           >
-            Start Drill →
+            {selected.size === 0 ? 'Select a topic to start' : `Start Drill (${selected.size} topic${selected.size !== 1 ? 's' : ''}) →`}
           </Button>
         </div>
       </header>

@@ -21,7 +21,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'No topics selected' }, { status: 400 })
   }
 
-  const admin = await createAdminClient()
+  const admin = createAdminClient()
+
+  // Ensure profile exists (handles edge case where OAuth callback didn't create it)
+  await admin.from('profiles').upsert({
+    id: user.id,
+    name: user.user_metadata?.full_name ?? null,
+    avatar_url: user.user_metadata?.avatar_url ?? null,
+    onboarding_complete: true,
+    is_admin: false,
+  }, { onConflict: 'id', ignoreDuplicates: true })
 
   // Build question query
   let query = admin
@@ -38,7 +47,11 @@ export async function POST(request: Request) {
   const { data: allQuestions } = await query
 
   if (!allQuestions || allQuestions.length === 0) {
-    return NextResponse.json({ error: 'No approved questions found for these topics' }, { status: 404 })
+    return NextResponse.json({
+      error: mode === 'recall'
+        ? 'No approved flashcards found for these topics. Upload source material and approve flashcard questions first.'
+        : 'No approved MCQ questions found for these topics. Upload source material and approve questions in the admin panel first.',
+    }, { status: 404 })
   }
 
   // SRS ordering: due questions first, then unseen, then seen-but-not-due

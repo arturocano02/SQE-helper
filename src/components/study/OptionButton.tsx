@@ -9,10 +9,10 @@ interface OptionButtonProps {
 }
 
 const stateClasses: Record<OptionButtonProps['state'], string> = {
-  idle:           'border-border bg-surface2 text-primary hover:bg-surface hover:border-secondary',
-  selected:       'border-accent bg-accent-dim text-accent',
-  correct:        'border-success bg-success/10 text-success',
-  incorrect:      'border-error bg-error/10 text-error',
+  idle:            'border-border bg-surface text-primary hover:bg-surface2 hover:border-secondary shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]',
+  selected:        'border-accent bg-accent-dim text-accent shadow-[0_1px_0_0_rgba(200,146,42,0.15)_inset]',
+  correct:         'border-success bg-success/10 text-success',
+  incorrect:       'border-error bg-error/10 text-error',
   'reveal-correct':'border-success/50 bg-success/5 text-success/80',
 }
 
@@ -22,7 +22,7 @@ export default function OptionButton({ label, text, state, onClick, disabled }: 
       onClick={onClick}
       disabled={disabled}
       className={[
-        'w-full text-left flex items-start gap-3 px-4 py-3 rounded border transition',
+        'w-full text-left flex items-start gap-3 px-4 py-3 rounded-lg border transition',
         'disabled:cursor-default focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-bg',
         stateClasses[state],
       ].join(' ')}

@@ -1,14 +1,20 @@
+import React from 'react'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import type { Topic, UserTopicMastery, Session } from '@/types/database'
 import TopicCard from '@/components/ui/TopicCard'
 import Button from '@/components/ui/Button'
+import { DrillIcon, RecallIcon, ProgressIcon, ProfileIcon } from '@/components/ui/Icon'
 
 export default async function HomePage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/sign-in')
+
+  // Admins go to their own dashboard, never the student home
+  const { data: profileCheck } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single()
+  if (profileCheck?.is_admin) redirect('/admin')
 
   const [{ data: profile }, { data: topicsData }, { data: masteryData }, { data: incompleteSession }] =
     await Promise.all([
@@ -50,13 +56,23 @@ export default async function HomePage() {
   return (
     <main className="min-h-screen bg-bg">
       {/* Header */}
-      <header className="border-b border-border">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <h1 className="font-serif text-2xl text-primary">SQE1</h1>
-          <nav className="flex items-center gap-6">
-            <Link href="/study/drill" className="text-sm text-secondary hover:text-primary transition">Drill</Link>
-            <Link href="/study/recall" className="text-sm text-secondary hover:text-primary transition">Recall</Link>
-            <Link href="/progress" className="text-sm text-secondary hover:text-primary transition">Progress</Link>
+      <header className="border-b border-border bg-surface/60 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="font-serif text-xl text-primary">SQE1</span>
+            <span className="text-xs text-muted font-sans">Study</span>
+          </div>
+          <nav className="flex items-center gap-1">
+            <NavLink href="/study/drill" icon={<DrillIcon size={16} />} label="Drill" />
+            <NavLink href="/study/recall" icon={<RecallIcon size={16} />} label="Recall" />
+            <NavLink href="/progress" icon={<ProgressIcon size={16} />} label="Progress" />
+            <Link
+              href="/profile"
+              className="ml-2 flex items-center gap-1.5 text-secondary hover:text-primary px-3 py-1.5 rounded hover:bg-surface2 transition"
+              title="Profile"
+            >
+              <ProfileIcon size={16} />
+            </Link>
           </nav>
         </div>
       </header>
@@ -71,7 +87,7 @@ export default async function HomePage() {
         {/* Resume incomplete session */}
         {incompleteSession && (
           <section>
-            <div className="bg-accent-dim border border-accent/30 rounded-lg p-5 flex items-center justify-between gap-4">
+            <div className="bg-accent-dim border border-accent/30 rounded-xl p-5 flex items-center justify-between gap-4">
               <div>
                 <p className="text-accent font-medium mb-0.5">Continue where you left off</p>
                 <p className="text-secondary text-sm">
@@ -121,7 +137,7 @@ export default async function HomePage() {
                   ? Math.floor((Date.now() - new Date(topic.mastery.last_visited_at).getTime()) / (1000 * 60 * 60 * 24))
                   : null
                 return (
-                  <div key={topic.id} className="bg-surface border border-border rounded-lg p-4 flex items-center justify-between gap-4">
+                  <div key={topic.id} className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between gap-4">
                     <div>
                       <p className="text-primary text-sm font-medium">{topic.name}</p>
                       {days !== null && (
@@ -161,9 +177,21 @@ function QuickLaunchButton({ href, label }: { href: string; label: string }) {
   return (
     <Link
       href={href}
-      className="text-xs border border-border text-secondary px-3 py-1.5 rounded hover:bg-surface transition"
+      className="text-xs border border-border text-secondary px-3 py-1.5 rounded hover:bg-surface hover:text-accent hover:border-accent/40 transition"
     >
       {label}
+    </Link>
+  )
+}
+
+function NavLink({ href, icon, label }: { href: string; icon: React.ReactNode; label: string }) {
+  return (
+    <Link
+      href={href}
+      className="flex items-center gap-1.5 text-secondary hover:text-primary px-3 py-1.5 rounded hover:bg-surface2 transition text-sm"
+    >
+      {icon}
+      <span>{label}</span>
     </Link>
   )
 }

@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   const { session_id, question_id, selected_answer } = body
 
   // Get question (use admin to bypass RLS on draft check edge cases)
-  const admin = await createAdminClient()
+  const admin = createAdminClient()
   const { data: question } = await admin
     .from('questions')
     .select('correct_answer, explanation, difficulty, topic_id')

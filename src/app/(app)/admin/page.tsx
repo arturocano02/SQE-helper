@@ -1,20 +1,12 @@
-import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/server'
 import type { SourceMaterial, Topic } from '@/types/database'
 import SourceMaterialRow from '@/components/admin/SourceMaterialRow'
 
 export const dynamic = 'force-dynamic'
 
 export default async function AdminDashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/sign-in')
-
-  const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single()
-  if (!profile?.is_admin) redirect('/home')
-
-  const admin = await createAdminClient()
+  const admin = createAdminClient()
 
   // Fetch analytics data in parallel
   const [
@@ -60,23 +52,15 @@ export default async function AdminDashboardPage() {
 
   return (
     <main className="min-h-screen bg-bg">
-      <header className="border-b border-border">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="font-serif text-2xl text-primary">Admin Dashboard</h1>
-            <p className="text-secondary text-sm">Content management &amp; analytics</p>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link href="/admin/content/upload" className="bg-accent text-bg font-medium px-4 py-2 rounded text-sm hover:opacity-90 transition">
-              Upload Source Material
-            </Link>
-            <Link href="/admin/content/questions" className="border border-border text-secondary px-4 py-2 rounded text-sm hover:bg-surface2 transition">
-              Question Bank
-            </Link>
-            <Link href="/home" className="text-secondary text-sm hover:text-primary transition">← Home</Link>
-          </div>
+      <div className="max-w-6xl mx-auto px-6 py-6 flex items-center justify-between">
+        <div>
+          <h1 className="font-serif text-2xl text-primary">Dashboard</h1>
+          <p className="text-secondary text-sm">Content management &amp; analytics</p>
         </div>
-      </header>
+        <Link href="/admin/content/upload" className="bg-accent text-bg font-medium px-4 py-2 rounded-lg text-sm hover:opacity-90 transition">
+          + Upload Source Material
+        </Link>
+      </div>
 
       <div className="max-w-6xl mx-auto px-6 py-10 space-y-12">
 
@@ -116,7 +100,7 @@ export default async function AdminDashboardPage() {
                 const pct = Math.round((count / maxCount) * 100)
                 return (
                   <div key={t.id} className="px-4 py-3 flex items-center gap-4">
-                    <span className={`text-xs border rounded px-1.5 py-0.5 shrink-0 ${
+                    <span className={`text-xs border rounded-lg px-1.5 py-0.5 shrink-0 ${
                       t.paper === 'FLK1' ? 'border-accent/50 text-accent' : 'border-secondary/50 text-secondary'
                     }`}>{t.paper}</span>
                     <span className="text-sm text-primary w-52 shrink-0 truncate">{t.name}</span>
@@ -146,7 +130,7 @@ export default async function AdminDashboardPage() {
               </p>
               <Link
                 href="/admin/content/questions"
-                className="bg-warning/20 text-warning px-3 py-1.5 rounded text-xs hover:bg-warning/30 transition"
+                className="bg-warning/20 text-warning px-3 py-1.5 rounded-lg text-xs hover:bg-warning/30 transition"
               >
                 Review now →
               </Link>
@@ -166,7 +150,7 @@ export default async function AdminDashboardPage() {
             </div>
             <Link
               href="/admin/content/upload"
-              className="bg-accent text-bg font-medium px-4 py-2 rounded text-sm hover:opacity-90 transition"
+              className="bg-accent text-bg font-medium px-4 py-2 rounded-lg text-sm hover:opacity-90 transition"
             >
               + Upload New
             </Link>
@@ -194,14 +178,14 @@ export default async function AdminDashboardPage() {
               </table>
             </div>
           ) : (
-            <div className="bg-surface border border-border border-dashed rounded-lg p-12 text-center">
+            <div className="bg-surface border border-border border-dashed rounded-xl p-12 text-center">
               <p className="text-secondary mb-2">No source material uploaded yet</p>
               <p className="text-muted text-sm mb-6">
                 Upload your FLK1 and FLK2 notes to generate the question bank
               </p>
               <Link
                 href="/admin/content/upload"
-                className="bg-accent text-bg font-medium px-5 py-2.5 rounded hover:opacity-90 transition"
+                className="bg-accent text-bg font-medium px-5 py-2.5 rounded-lg hover:opacity-90 transition"
               >
                 Upload First File →
               </Link>
@@ -228,7 +212,7 @@ function StatCard({
   warning?: boolean
 }) {
   return (
-    <div className="bg-surface border border-border rounded-lg p-5">
+    <div className="bg-surface border border-border rounded-xl p-5">
       <p className="text-secondary text-xs mb-1 uppercase tracking-wide">{label}</p>
       <p className={`font-serif text-3xl ${accent ? 'text-accent' : warning ? 'text-warning' : 'text-primary'}`}>
         {typeof value === 'number' ? value.toLocaleString() : value}

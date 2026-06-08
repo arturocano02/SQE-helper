@@ -97,21 +97,21 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
           {/* Status */}
           {(['all', 'draft', 'approved', 'archived'] as const).map(s => (
             <button key={s} onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1 rounded text-xs border transition capitalize ${statusFilter === s ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
+              className={`px-3 py-1 rounded-lg text-xs border transition capitalize ${statusFilter === s ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
               {s}
             </button>
           ))}
           <div className="w-px bg-border" />
           {(['all', 'mcq', 'flashcard'] as const).map(t => (
             <button key={t} onClick={() => setTypeFilter(t)}
-              className={`px-3 py-1 rounded text-xs border transition capitalize ${typeFilter === t ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
+              className={`px-3 py-1 rounded-lg text-xs border transition capitalize ${typeFilter === t ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
               {t === 'all' ? 'All types' : t}
             </button>
           ))}
           <div className="w-px bg-border" />
           {(['all', 'easy', 'medium', 'hard'] as const).map(d => (
             <button key={d} onClick={() => setDiffFilter(d)}
-              className={`px-3 py-1 rounded text-xs border transition capitalize ${diffFilter === d ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
+              className={`px-3 py-1 rounded-lg text-xs border transition capitalize ${diffFilter === d ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
               {d === 'all' ? 'Any difficulty' : d}
             </button>
           ))}
@@ -121,7 +121,7 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
         <select
           value={topicFilter}
           onChange={e => setTopicFilter(e.target.value)}
-          className="mb-4 bg-surface2 border border-border text-primary px-3 py-1.5 rounded text-sm focus:border-accent focus:outline-none"
+          className="mb-4 bg-surface2 border border-border text-primary px-3 py-1.5 rounded-lg text-sm focus:border-accent focus:outline-none"
         >
           <option value="all">All topics</option>
           {topics.map(t => (

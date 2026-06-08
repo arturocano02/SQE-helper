@@ -31,7 +31,7 @@ export default function TopicCard({ topic, mastery, selected, onClick, actions, 
     <div
       onClick={onClick}
       className={[
-        'bg-surface border rounded-lg p-4 transition',
+        'bg-surface border rounded-xl p-4 transition shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]',
         onClick ? 'cursor-pointer' : '',
         selected
           ? 'bg-accent-dim border-accent'

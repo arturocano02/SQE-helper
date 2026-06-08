@@ -132,7 +132,7 @@ export default function RecallSessionPage() {
           {!revealed ? (
             <button
               onClick={() => setRevealed(true)}
-              className="w-full border border-border text-secondary py-3 rounded hover:bg-surface2 transition"
+              className="w-full border border-border text-secondary py-3 rounded-lg hover:bg-surface2 transition"
             >
               Reveal Answer
             </button>
@@ -146,19 +146,19 @@ export default function RecallSessionPage() {
               <div className="grid grid-cols-3 gap-2">
                 <button
                   onClick={() => handleAssessment('missed_it')}
-                  className="py-3 rounded border border-error/40 text-error bg-error/5 hover:bg-error/10 transition text-sm"
+                  className="py-3 rounded-lg border border-error/40 text-error bg-error/5 hover:bg-error/10 transition text-sm"
                 >
                   ✗ Missed it
                 </button>
                 <button
                   onClick={() => handleAssessment('nearly')}
-                  className="py-3 rounded border border-warning/40 text-warning bg-warning/5 hover:bg-warning/10 transition text-sm"
+                  className="py-3 rounded-lg border border-warning/40 text-warning bg-warning/5 hover:bg-warning/10 transition text-sm"
                 >
                   ≈ Nearly
                 </button>
                 <button
                   onClick={() => handleAssessment('got_it')}
-                  className="py-3 rounded border border-success/40 text-success bg-success/5 hover:bg-success/10 transition text-sm"
+                  className="py-3 rounded-lg border border-success/40 text-success bg-success/5 hover:bg-success/10 transition text-sm"
                 >
                   ✓ Got it
                 </button>

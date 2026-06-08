@@ -4,56 +4,175 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 
+type Mode = 'signin' | 'signup'
+
 export default function SignInPage() {
+  const [mode, setMode] = useState<Mode>('signin')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
 
   async function handleGoogleSignIn() {
-    setLoading(true)
+    setGoogleLoading(true)
     setError(null)
     const supabase = createClient()
-    const { error } = await supabase.auth.signInWithOAuth({
+    const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
+        skipBrowserRedirect: false,
       },
     })
+    if (data?.url) {
+      window.location.href = data.url
+      return
+    }
     if (error) {
       setError(error.message)
-      setLoading(false)
+      setGoogleLoading(false)
     }
+  }
+
+  async function handleEmailAuth(e: React.FormEvent) {
+    e.preventDefault()
+    if (!email || !password) return
+    setLoading(true)
+    setError(null)
+    setMessage(null)
+
+    const supabase = createClient()
+
+    if (mode === 'signup') {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
+      if (error) {
+        setError(error.message)
+      } else {
+        setMessage('Check your email for a confirmation link.')
+      }
+    } else {
+      const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) {
+        setError(error.message)
+      } else {
+        // Session is already set — check if admin and redirect accordingly
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('is_admin, onboarding_complete')
+          .eq('id', signInData.user.id)
+          .single()
+
+        if (profile?.is_admin) {
+          window.location.href = '/admin'
+        } else if (!profile?.onboarding_complete) {
+          window.location.href = '/onboarding'
+        } else {
+          window.location.href = '/home'
+        }
+      }
+    }
+
+    setLoading(false)
   }
 
   return (
     <main className="min-h-screen bg-bg flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
-        {/* Logo / Brand */}
+
+        {/* Brand */}
         <div className="mb-10">
-          <h1 className="font-serif text-4xl text-primary mb-2">SQE1</h1>
+          <div className="flex items-center justify-center gap-2 mb-3">
+            <span className="w-8 h-8 rounded-lg bg-accent/20 border border-accent/30 flex items-center justify-center">
+              <span className="font-serif text-accent text-sm font-semibold">S</span>
+            </span>
+            <h1 className="font-serif text-3xl text-primary">SQE1</h1>
+          </div>
           <p className="text-secondary text-sm">Adaptive study for the Solicitors Qualifying Examination</p>
         </div>
 
-        {/* Sign-in card */}
-        <div className="bg-surface border border-border rounded-lg p-8">
-          <h2 className="font-serif text-2xl text-primary mb-2">Welcome</h2>
-          <p className="text-secondary text-sm mb-8">Sign in to continue your studies</p>
+        <div className="bg-surface border border-border rounded-xl p-8">
+          <h2 className="font-serif text-2xl text-primary mb-6">
+            {mode === 'signin' ? 'Welcome back' : 'Create account'}
+          </h2>
 
+          {/* Google */}
           <button
             onClick={handleGoogleSignIn}
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-3 bg-surface2 border border-border text-primary px-4 py-3 rounded hover:bg-border transition disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={googleLoading || loading}
+            className="w-full flex items-center justify-center gap-3 bg-surface2 border border-border text-primary px-4 py-3 rounded-lg hover:bg-border transition disabled:opacity-50 disabled:cursor-not-allowed mb-4"
           >
-            {loading ? (
-              <LoadingSpinner size="sm" />
-            ) : (
-              <GoogleIcon />
-            )}
-            <span>Continue with Google</span>
+            {googleLoading ? <LoadingSpinner size="sm" /> : <GoogleIcon />}
+            <span className="text-sm">Continue with Google</span>
           </button>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex-1 h-px bg-border" />
+            <span className="text-xs text-muted">or</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+
+          {/* Email / password form */}
+          <form onSubmit={handleEmailAuth} className="space-y-3 text-left">
+            <div>
+              <label className="block text-xs text-secondary mb-1">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                required
+                className="w-full bg-surface2 border border-border text-primary px-3 py-2.5 rounded-lg text-sm focus:border-accent focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-secondary mb-1">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder={mode === 'signup' ? 'Min. 6 characters' : '••••••••'}
+                required
+                minLength={6}
+                className="w-full bg-surface2 border border-border text-primary px-3 py-2.5 rounded-lg text-sm focus:border-accent focus:outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading || googleLoading}
+              className="w-full bg-accent text-bg font-medium py-2.5 rounded-lg hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm flex items-center justify-center gap-2"
+            >
+              {loading && <LoadingSpinner size="sm" />}
+              {mode === 'signin' ? 'Sign in' : 'Create account'}
+            </button>
+          </form>
 
           {error && (
             <p className="mt-4 text-sm text-error text-center">{error}</p>
           )}
+          {message && (
+            <p className="mt-4 text-sm text-success text-center">{message}</p>
+          )}
+
+          {/* Toggle mode */}
+          <p className="mt-5 text-xs text-muted text-center">
+            {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
+            <button
+              onClick={() => { setMode(m => m === 'signin' ? 'signup' : 'signin'); setError(null); setMessage(null) }}
+              className="text-secondary hover:text-primary transition underline underline-offset-2"
+            >
+              {mode === 'signin' ? 'Sign up' : 'Sign in'}
+            </button>
+          </p>
         </div>
 
         <p className="mt-6 text-xs text-muted text-center">

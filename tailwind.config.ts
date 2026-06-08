@@ -5,10 +5,10 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        bg:           '#0D0D0B',
-        surface:      '#161613',
-        surface2:     '#1E1E1A',
-        border:       '#2A2A24',
+        bg:           '#0D0D0B',  // page background — near black
+        surface:      '#1A1A16',  // cards — clearly above bg
+        surface2:     '#242420',  // inputs / hover — above surface
+        border:       '#32322A',  // visible borders
         accent:       '#C8922A',
         'accent-dim': '#5C3F0D',
         primary:      '#EEE9DF',
@@ -21,6 +21,16 @@ const config: Config = {
       fontFamily: {
         serif: ['var(--font-cormorant)', 'Georgia', 'serif'],
         sans:  ['var(--font-dm-sans)', 'system-ui', 'sans-serif'],
+      },
+      borderRadius: {
+        none: '0',
+        sm:   '0.375rem',   // 6px
+        DEFAULT: '0.625rem', // 10px
+        md:   '0.75rem',    // 12px
+        lg:   '1rem',       // 16px
+        xl:   '1.25rem',    // 20px
+        '2xl':'1.5rem',     // 24px
+        full: '9999px',
       },
       transitionDuration: {
         DEFAULT: '150ms',

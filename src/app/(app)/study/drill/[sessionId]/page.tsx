@@ -154,13 +154,13 @@ export default function DrillSessionPage() {
             <div className="flex gap-3">
               <button
                 onClick={handleExit}
-                className="flex-1 bg-accent text-bg font-medium py-2 rounded hover:opacity-90 transition"
+                className="flex-1 bg-accent text-bg font-medium py-2 rounded-lg hover:opacity-90 transition"
               >
                 Save & Exit
               </button>
               <button
                 onClick={() => setShowExitPrompt(false)}
-                className="flex-1 border border-border text-secondary py-2 rounded hover:bg-surface2 transition"
+                className="flex-1 border border-border text-secondary py-2 rounded-lg hover:bg-surface2 transition"
               >
                 Keep Going
               </button>

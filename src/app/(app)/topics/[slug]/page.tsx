@@ -57,7 +57,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
 
         {/* Mastery breakdown */}
         {mastery && (
-          <div className="bg-surface border border-border rounded-lg p-5 mb-8">
+          <div className="bg-surface border border-border rounded-xl p-5 mb-8">
             <h2 className="font-serif text-lg text-primary mb-4">Your Progress</h2>
             <div className="grid grid-cols-3 gap-4">
               {(['easy', 'medium', 'hard'] as const).map(d => {
@@ -85,7 +85,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
         <div className="grid grid-cols-2 gap-4">
           <Link
             href={`/study/drill?topics=${t.id}`}
-            className="bg-surface border border-border rounded-lg p-5 hover:bg-surface2 transition group"
+            className="bg-surface border border-border rounded-xl p-5 hover:bg-surface2 transition group"
           >
             <h3 className="font-serif text-xl text-primary mb-1 group-hover:text-accent transition">Topic Drill</h3>
             <p className="text-secondary text-sm">Practice MCQs on {t.name}</p>
@@ -96,7 +96,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
 
           <Link
             href={`/study/recall?topics=${t.id}`}
-            className="bg-surface border border-border rounded-lg p-5 hover:bg-surface2 transition group"
+            className="bg-surface border border-border rounded-xl p-5 hover:bg-surface2 transition group"
           >
             <h3 className="font-serif text-xl text-primary mb-1 group-hover:text-accent transition">Active Recall</h3>
             <p className="text-secondary text-sm">Flashcard rule review</p>
