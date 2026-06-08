@@ -1,0 +1,52 @@
+'use client'
+
+import React from 'react'
+
+type Variant = 'primary' | 'ghost' | 'danger'
+type Size = 'sm' | 'md'
+
+interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: Variant
+  size?: Size
+  loading?: boolean
+}
+
+const variantClasses: Record<Variant, string> = {
+  primary: 'bg-accent text-bg font-medium hover:opacity-90 focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-bg',
+  ghost:   'border border-border text-secondary hover:bg-surface2 focus:ring-2 focus:ring-border focus:ring-offset-2 focus:ring-offset-bg',
+  danger:  'bg-error/10 text-error border border-error/30 hover:bg-error/20 focus:ring-2 focus:ring-error focus:ring-offset-2 focus:ring-offset-bg',
+}
+
+const sizeClasses: Record<Size, string> = {
+  sm: 'px-3 py-1.5 text-sm rounded',
+  md: 'px-4 py-2 rounded',
+}
+
+export default function Button({
+  variant = 'primary',
+  size = 'md',
+  loading = false,
+  disabled,
+  className = '',
+  children,
+  ...props
+}: ButtonProps) {
+  return (
+    <button
+      disabled={disabled || loading}
+      className={[
+        'inline-flex items-center justify-center gap-2 transition outline-none cursor-pointer',
+        'disabled:opacity-40 disabled:cursor-not-allowed',
+        variantClasses[variant],
+        sizeClasses[size],
+        className,
+      ].join(' ')}
+      {...props}
+    >
+      {loading && (
+        <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+      )}
+      {children}
+    </button>
+  )
+}
