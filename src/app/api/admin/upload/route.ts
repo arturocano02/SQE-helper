@@ -1,6 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { anthropic, MODEL_BULK } from '@/lib/anthropic'
-import { chunkText } from '@/lib/chunker'
+import { anthropic, MODEL, MODEL_BULK } from '@/lib/anthropic'
+import { chunkText, chunkForImport, type TextChunk } from '@/lib/chunker'
 
 // ── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -91,18 +91,26 @@ Return ONLY valid JSON, no markdown fences:
 {"questions":[{"topic_slug":"string","type":"mcq"|"flashcard","difficulty":"easy"|"medium"|"hard","prompt":"string","options":[{"label":"A","text":"..."},{"label":"B","text":"..."},{"label":"C","text":"..."},{"label":"D","text":"..."},{"label":"E","text":"..."}],"correct_answer":"A"|"B"|"C"|"D"|"E","explanation":"string"}]}
 Flashcards: options=null, correct_answer=null, explanation=full rule answer.`
 
-const IMPORT_SYSTEM = `You are parsing an official SQE1 sample question paper for England and Wales.
+const IMPORT_SYSTEM = `You are parsing an official SRA SQE1 sample question paper for England and Wales.
 
-Extract EVERY MCQ exactly as written:
-- Copy the question prompt verbatim (preserve all scenario details)
-- Copy all 5 options A–E verbatim
-- Correct answer: look for an answer key section at the end of the document — answers are often listed as "1. C  2. A  3. B..." Match each question number to its answer. If no answer key is visible in this chunk, use your legal knowledge to determine the correct answer.
-- Explanation: write 3-5 sentences explaining why the correct answer is right and why each wrong option fails
-- Topic: read the question content carefully and assign the most accurate slug
+The document format is:
+- Questions are numbered "Question 1", "Question 2" etc. (or just "1.", "2.")
+- Each question has a scenario/fact pattern, then "Which of the following..." or similar
+- Options are labelled A. B. C. D. E.
+- An answer key appears at the end formatted as: "1 B  2 C  3 A..." or in two columns
+
+Your job: extract EVERY question in this chunk.
+
+For each question:
+1. "prompt": copy the FULL question text verbatim including the scenario and the question asked
+2. "options": copy each of A, B, C, D, E verbatim
+3. "correct_answer": use the ANSWER KEY section at the bottom of this text (look for "=== ANSWER KEY ===" marker). Match the question number to the letter. If no key is present, use your legal knowledge.
+4. "explanation": 2-3 sentences — why the correct answer is right, why the main distractor is wrong
+5. "topic_slug": classify based on legal subject matter
+6. "difficulty": "medium" for application questions, "hard" for complex multi-issue scenarios, "easy" only for pure recall
 ${TOPIC_GUIDE}
-${DIFFICULTY_GUIDE}
 
-Return ONLY valid JSON, no markdown fences:
+Return ONLY valid JSON, no markdown, no commentary:
 {"questions":[{"topic_slug":"string","type":"mcq","difficulty":"easy"|"medium"|"hard","prompt":"string","options":[{"label":"A","text":"..."},{"label":"B","text":"..."},{"label":"C","text":"..."},{"label":"D","text":"..."},{"label":"E","text":"..."}],"correct_answer":"A"|"B"|"C"|"D"|"E","explanation":"string"}]}`
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -124,48 +132,107 @@ async function extractText(buffer: Buffer, ext: string): Promise<string> {
     return (await mammoth.extractRawText({ buffer })).value
   }
   if (ext === 'pdf') {
+    // pdf-parse v1 — callable as a function directly
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>
-    return (await pdfParse(buffer)).text
+    const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string; numpages: number }>
+    const result = await pdfParse(buffer)
+    return result.text
   }
   throw new Error(`Unsupported file type: .${ext}`)
 }
 
-/**
- * For import mode: split into larger chunks (~20 questions each).
- * Sample question papers don't have ALL CAPS headers so we split by size only.
- */
-function chunkForImport(text: string): string[] {
-  const CHUNK_SIZE = 6000
-  const chunks: string[] = []
-  let i = 0
-  while (i < text.length) {
-    // Try to break at a question boundary (newline before a number like "\n12.")
-    let end = Math.min(i + CHUNK_SIZE, text.length)
-    if (end < text.length) {
-      const breakAt = text.lastIndexOf('\n', end)
-      if (breakAt > i + 2000) end = breakAt
-    }
-    const chunk = text.slice(i, end).trim()
-    if (chunk.length > 100) chunks.push(chunk)
-    i = end
-  }
-  return chunks
+
+const VALID_SLUGS = new Set([
+  'business-law','dispute-resolution','contract','tort','legal-system',
+  'legal-services','property-practice','land-law','trusts','wills',
+  'solicitors-accounts','criminal-law',
+])
+
+// Fuzzy slug correction — if Claude returns something close, map it
+const SLUG_ALIASES: Record<string, string> = {
+  'business': 'business-law',
+  'business law': 'business-law',
+  'dispute': 'dispute-resolution',
+  'civil litigation': 'dispute-resolution',
+  'civil procedure': 'dispute-resolution',
+  'contract law': 'contract',
+  'tort law': 'tort',
+  'public law': 'legal-system',
+  'constitutional law': 'legal-system',
+  'legal system': 'legal-system',
+  'professional conduct': 'legal-services',
+  'solicitors': 'legal-services',
+  'property': 'property-practice',
+  'conveyancing': 'property-practice',
+  'land': 'land-law',
+  'equity': 'trusts',
+  'trusts and equity': 'trusts',
+  'wills and probate': 'wills',
+  'wills and administration': 'wills',
+  'probate': 'wills',
+  'accounts': 'solicitors-accounts',
+  'criminal': 'criminal-law',
+  'criminal litigation': 'criminal-law',
 }
 
-async function callClaude(system: string, content: string): Promise<GeneratedQuestion[]> {
+function normaliseSlug(raw: string | undefined): string | null {
+  if (!raw) return null
+  const s = raw.toLowerCase().trim().replace(/_/g, '-')
+  if (VALID_SLUGS.has(s)) return s
+  if (ALIAS_MAP.has(s)) return ALIAS_MAP.get(s)!
+  // partial match
+  for (const [alias, slug] of ALIAS_MAP) {
+    if (s.includes(alias) || alias.includes(s)) return slug
+  }
+  return null
+}
+
+const ALIAS_MAP = new Map(Object.entries(SLUG_ALIASES))
+
+async function callClaude(
+  system: string,
+  content: string,
+  topicHint?: string | null,
+  mode: 'generate' | 'import' = 'generate'
+): Promise<GeneratedQuestion[]> {
+  const model = mode === 'import' ? MODEL : MODEL_BULK
+
+  const userContent = topicHint
+    ? `The following content is from the "${topicHint}" section. Prefer topic_slug "${topicHint}" unless clearly wrong.\n\n${content}`
+    : content
+
+  let raw = ''
   try {
     const message = await anthropic.messages.create({
-      model: MODEL_BULK,
+      model,
       max_tokens: 8192,
       system,
-      messages: [{ role: 'user', content }],
+      messages: [{ role: 'user', content: userContent }],
     })
-    const raw = message.content[0].type === 'text' ? message.content[0].text : ''
-    const cleaned = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
+    raw = message.content[0].type === 'text' ? message.content[0].text : ''
+    const cleaned = raw.replace(/^```(?:json)?\n?/gm, '').replace(/\n?```$/gm, '').trim()
     const parsed = JSON.parse(cleaned)
-    return Array.isArray(parsed.questions) ? parsed.questions : []
-  } catch {
+
+    if (!Array.isArray(parsed.questions)) {
+      console.warn('[upload] Claude returned JSON but no questions array. Keys:', Object.keys(parsed))
+      return []
+    }
+
+    // Normalise slugs — filter out questions with unresolvable slugs
+    const valid: GeneratedQuestion[] = []
+    for (const q of parsed.questions) {
+      const slug = normaliseSlug(q.topic_slug)
+      if (slug) {
+        valid.push({ ...q, topic_slug: slug })
+      } else {
+        console.warn('[upload] Unresolvable slug:', q.topic_slug, '— skipping question:', q.prompt?.slice(0, 60))
+      }
+    }
+    console.log(`[upload] Claude returned ${parsed.questions.length} questions, ${valid.length} with valid slugs`)
+    return valid
+  } catch (e) {
+    console.error('[upload] Claude parse error:', e instanceof Error ? e.message : e)
+    console.error('[upload] Raw response (first 400):', raw.slice(0, 400))
     return []
   }
 }
@@ -220,9 +287,13 @@ export async function POST(request: Request) {
         let text = ''
         try {
           text = await extractText(Buffer.from(await file.arrayBuffer()), ext)
+          console.log(`[upload] Extracted ${text.length} chars from ${fileName}`)
+          console.log(`[upload] First 300 chars: ${text.slice(0, 300).replace(/\n/g, '↵')}`)
+          console.log(`[upload] Last 300 chars: ${text.slice(-300).replace(/\n/g, '↵')}`)
           if (materialId) await admin.from('source_materials').update({ raw_text: text }).eq('id', materialId)
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Extraction failed'
+          console.error(`[upload] Extraction failed for ${fileName}:`, msg)
           if (materialId) await admin.from('source_materials').update({ status: 'failed', error_message: msg }).eq('id', materialId)
           send('file_error', { file: fileName, error: msg })
           continue
@@ -234,44 +305,82 @@ export async function POST(request: Request) {
           continue
         }
 
-        // Chunk
-        const rawChunks = uploadMode === 'generate' ? chunkText(text) : chunkForImport(text)
-        // No hard cap — process everything. Vercel allows 300s; Haiku is ~1.5s/chunk.
-        // Practical limit: ~150 chunks = ~225s. Warn in UI if over 120.
-        const chunks = rawChunks
-        const skipped = 0
-        if (materialId) await admin.from('source_materials').update({ total_chunks: chunks.length }).eq('id', materialId)
+        // Chunk — generate mode gets context-aware structured chunks
+        type AnyChunk = TextChunk | string
+
+        // For import mode: extract the raw answer key section and append to every chunk.
+        // SQE sample papers have a two-column answer key at the end (e.g. "1 B  46 A\n2 C  47 B...")
+        // We pass it raw so Claude handles the column layout — don't try to parse it ourselves.
+        let answerKeyAppendix = ''
+        if (uploadMode === 'import') {
+          const last4000 = text.slice(-4000)
+          // Count how many "number letter" pairs exist — if enough, this is the answer key
+          const pairCount = (last4000.match(/\b\d{1,3}\s+[A-E]\b/g) ?? []).length
+          if (pairCount >= 5) {
+            answerKeyAppendix = `\n\n=== ANSWER KEY (from end of document — use question numbers to match) ===\n${last4000.trim()}\n===`
+            console.log(`[upload] Answer key appended — found ${pairCount} answer pairs in last 4000 chars`)
+          } else {
+            console.warn(`[upload] No answer key detected (only ${pairCount} pairs found)`)
+          }
+        }
+
+        const rawChunks: AnyChunk[] = uploadMode === 'generate'
+          ? chunkText(text)
+          : chunkForImport(text).map(c => answerKeyAppendix ? c + answerKeyAppendix : c)
+
+        if (materialId) await admin.from('source_materials').update({ total_chunks: rawChunks.length }).eq('id', materialId)
 
         send('step', {
           file: fileName,
-          message: `Split into ${chunks.length} sections${skipped > 0 ? ` (${skipped} skipped — file too large)` : ''}`,
-          chunks: chunks.length,
+          message: `Split into ${rawChunks.length} sections — processing all`,
+          chunks: rawChunks.length,
         })
 
         // Process each chunk
         const allQuestions: GeneratedQuestion[] = []
         let chunksDone = 0
 
-        for (const chunk of chunks) {
+        for (const raw of rawChunks) {
+          const isStructured = typeof raw === 'object'
+          const chunkText2 = isStructured ? (raw as TextChunk).text : raw as string
+          const topicHint = isStructured ? (raw as TextChunk).topicSlug : null
+          const headerLabel = isStructured ? ((raw as TextChunk).topicHeader ?? '') : ''
+
+          // Skip chunks with no actual question content (intro pages, footer, etc.)
+          const textBeforeAnswerKey = chunkText2.split('=== ANSWER KEY')[0]
+          const hasQuestion = /question\s+\d{1,3}/i.test(textBeforeAnswerKey) ||
+                              /which of the following|select the (best|correct|most)/i.test(textBeforeAnswerKey) ||
+                              /\nA\.\s+\w|\nA\s{2,}\w/.test(textBeforeAnswerKey)
+
+          if (!hasQuestion) {
+            chunksDone++
+            console.log(`[upload] Skipping non-question chunk ${chunksDone}/${rawChunks.length} (intro/footer)`)
+            continue
+          }
+
           send('chunk_progress', {
             file: fileName,
             done: chunksDone,
-            total: chunks.length,
-            pct: Math.round((chunksDone / chunks.length) * 100),
-            message: `Processing section ${chunksDone + 1} of ${chunks.length}…`,
+            total: rawChunks.length,
+            pct: Math.round((chunksDone / rawChunks.length) * 100),
+            message: headerLabel
+              ? `Processing: ${headerLabel} (${chunksDone + 1}/${rawChunks.length})`
+              : `Processing section ${chunksDone + 1} of ${rawChunks.length}…`,
           })
 
-          const qs = await callClaude(systemPrompt, chunk)
+          const qs = await callClaude(systemPrompt, chunkText2, topicHint, uploadMode)
           allQuestions.push(...qs)
           chunksDone++
 
           send('chunk_progress', {
             file: fileName,
             done: chunksDone,
-            total: chunks.length,
-            pct: Math.round((chunksDone / chunks.length) * 100),
+            total: rawChunks.length,
+            pct: Math.round((chunksDone / rawChunks.length) * 100),
             questionsFound: allQuestions.length,
-            message: `Section ${chunksDone} done — ${allQuestions.length} questions so far`,
+            message: headerLabel
+              ? `Done: ${headerLabel} — ${allQuestions.length} questions total`
+              : `Section ${chunksDone} done — ${allQuestions.length} questions so far`,
           })
 
           if (materialId && chunksDone % 5 === 0) {

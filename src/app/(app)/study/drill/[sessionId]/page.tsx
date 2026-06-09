@@ -128,12 +128,13 @@ export default function DrillSessionPage() {
         onExit={() => setShowExitPrompt(true)}
       />
 
-      <div className="max-w-2xl mx-auto px-4 pt-24 pb-16">
+      <div className="max-w-2xl mx-auto px-5 pt-24 pb-20">
         {question && (
           <QuestionCard
             key={question.id}
             question={question}
             questionNumber={currentIndex + 1}
+            total={data.questions.length}
             topicName={topic?.name}
             topicPaper={topic?.paper}
             onAnswer={handleAnswer}

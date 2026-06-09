@@ -65,6 +65,20 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
     setBulkLoading(false)
   }
 
+  async function bulkDelete() {
+    if (selected.size === 0) return
+    if (!confirm(`Permanently delete ${selected.size} question${selected.size !== 1 ? 's' : ''}? This cannot be undone.`)) return
+    setBulkLoading(true)
+    await fetch('/api/admin/questions', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: Array.from(selected) }),
+    })
+    setQuestions(qs => qs.filter(q => !selected.has(q.id)))
+    setSelected(new Set())
+    setBulkLoading(false)
+  }
+
   function handleSave(updated: Question) {
     setQuestions(qs => qs.map(q => q.id === updated.id ? updated : q))
     setEditingId(null)
@@ -131,14 +145,19 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
 
         {/* Bulk actions */}
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 mb-3 p-3 bg-accent-dim border border-accent/30 rounded">
-            <span className="text-sm text-accent">{selected.size} selected</span>
-            <Button size="sm" onClick={bulkApprove} loading={bulkLoading}>
-              Approve selected
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-              Clear
-            </Button>
+          <div className="flex items-center gap-3 mb-3 p-3 bg-surface border border-border rounded-xl">
+            <span className="text-sm text-primary font-medium">{selected.size} selected</span>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button size="sm" onClick={bulkApprove} loading={bulkLoading}>
+                Approve selected
+              </Button>
+              <Button size="sm" variant="danger" onClick={bulkDelete} loading={bulkLoading}>
+                Delete selected
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                Clear
+              </Button>
+            </div>
           </div>
         )}
 

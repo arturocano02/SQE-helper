@@ -2,12 +2,20 @@ import React from 'react'
 
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode
+  interactive?: boolean
 }
 
-export default function Card({ children, className = '', ...props }: CardProps) {
+export default function Card({ children, className = '', interactive = false, ...props }: CardProps) {
   return (
     <div
-      className={`bg-surface border border-border rounded-xl p-6 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset] ${className}`}
+      style={{ background: 'var(--surface-1)', border: '1px solid var(--surface-border)' }}
+      className={[
+        'rounded-xl p-5 shadow-card transition-all duration-150',
+        interactive
+          ? 'cursor-pointer hover:-translate-y-px'
+          : '',
+        className,
+      ].join(' ')}
       {...props}
     >
       {children}

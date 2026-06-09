@@ -1,18 +1,75 @@
 @import "tailwindcss";
 
+:root {
+  /* ── Surfaces ── */
+  --surface-base:          #0A0A08;
+  --surface-1:             #111110;
+  --surface-2:             #1A1918;
+  --surface-3:             #242320;
+  --surface-border:        rgba(255,255,255,0.07);
+  --surface-border-active: rgba(200,146,42,0.35);
+
+  /* ── Amber ── */
+  --amber:       #C8922A;
+  --amber-soft:  rgba(200,146,42,0.15);
+  --amber-glow:  rgba(200,146,42,0.08);
+  --amber-text:  #E8A83C;
+
+  /* ── Text ── */
+  --text-primary:   #F0EDE8;
+  --text-secondary: #9A9590;
+  --text-muted:     #5C5855;
+
+  /* ── Status ── */
+  --status-correct:  #4CAF82;
+  --status-wrong:    #E05A5A;
+  --status-warning:  #C8922A;
+  --status-neutral:  #4A4845;
+}
+
 @layer base {
-  html { background-color: #0D0D0B; color: #EEE9DF; }
+  html {
+    background-color: var(--surface-base);
+    color: var(--text-primary);
+  }
   body {
     font-family: var(--font-dm-sans), system-ui, sans-serif;
-    /* Subtle warm noise texture to give depth between bg and cards */
-    background-image: radial-gradient(ellipse at 20% 50%, rgba(200,146,42,0.03) 0%, transparent 60%),
-                      radial-gradient(ellipse at 80% 20%, rgba(200,146,42,0.02) 0%, transparent 50%);
+    background-color: var(--surface-base);
+    /* Very subtle warm ambient glow */
+    background-image:
+      radial-gradient(ellipse 60% 40% at 15% 60%, rgba(200,146,42,0.04) 0%, transparent 70%),
+      radial-gradient(ellipse 40% 60% at 85% 20%, rgba(200,146,42,0.025) 0%, transparent 60%);
   }
-  h1, h2, h3 { font-family: var(--font-cormorant), Georgia, serif; font-weight: 600; }
+  h1, h2, h3 {
+    font-family: var(--font-cormorant), Georgia, serif;
+    font-weight: 600;
+  }
 
-  /* Scrollbar — keep it dark and minimal */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: #0D0D0B; }
-  ::-webkit-scrollbar-thumb { background: #32322A; border-radius: 9999px; }
-  ::-webkit-scrollbar-thumb:hover { background: #4A4740; }
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: var(--surface-base); }
+  ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--status-neutral); }
+}
+
+/* ── Shimmer skeleton loader ── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* ── Amber progress bar gradient ── */
+.progress-fill {
+  background: linear-gradient(90deg, var(--amber), var(--amber-text));
 }

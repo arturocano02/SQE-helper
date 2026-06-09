@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { Question, Topic, Session } from '@/types/database'
+import type { Question, Topic } from '@/types/database'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 import ProgressBar from '@/components/ui/ProgressBar'
 import Badge from '@/components/ui/Badge'
@@ -22,22 +22,11 @@ export default function RecallSessionPage() {
   useEffect(() => {
     async function load() {
       const supabase = createClient()
-      const { data: session } = await supabase
-        .from('sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .single()
-
+      const { data: session } = await supabase.from('sessions').select('*').eq('id', sessionId).single()
       if (!session?.question_ids?.length) { router.push('/study/recall'); return }
 
-      const { data: qs } = await supabase
-        .from('questions')
-        .select('*')
-        .in('id', session.question_ids as string[])
-
-      const { data: topicsData } = await supabase
-        .from('topics')
-        .select('*')
+      const { data: qs } = await supabase.from('questions').select('*').in('id', session.question_ids as string[])
+      const { data: topicsData } = await supabase.from('topics').select('*')
         .in('id', (qs ?? []).map((q: Question) => q.topic_id).filter(Boolean) as string[])
 
       const topicMap = new Map(((topicsData ?? []) as Topic[]).map(t => [t.id, t]))
@@ -55,9 +44,6 @@ export default function RecallSessionPage() {
   const handleAssessment = useCallback(async (assessment: SelfAssessment) => {
     const question = questions[currentIndex]
     if (!question) return
-
-    // Map assessment to quality score for SRS
-    const qualityMap: Record<SelfAssessment, number> = { got_it: 5, nearly: 3, missed_it: 1 }
 
     await fetch('/api/sessions/answer', {
       method: 'POST',
@@ -84,12 +70,22 @@ export default function RecallSessionPage() {
     }
   }, [questions, currentIndex, sessionId, router])
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!revealed) {
+        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setRevealed(true) }
+        return
+      }
+      if (e.key === '1') handleAssessment('missed_it')
+      if (e.key === '2') handleAssessment('nearly')
+      if (e.key === '3') handleAssessment('got_it')
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [revealed, handleAssessment])
+
   if (loading || questions.length === 0) {
-    return (
-      <div className="min-h-screen bg-bg flex items-center justify-center">
-        <LoadingSpinner size="lg" />
-      </div>
-    )
+    return <div className="min-h-screen bg-bg flex items-center justify-center"><LoadingSpinner size="lg" /></div>
   }
 
   const question = questions[currentIndex]
@@ -97,76 +93,75 @@ export default function RecallSessionPage() {
 
   return (
     <main className="min-h-screen bg-bg flex flex-col">
-      {/* Header */}
-      <header className="border-b border-border">
-        <div className="max-w-lg mx-auto px-4 py-3">
-          <div className="flex items-center gap-3 mb-2">
-            <button
-              onClick={() => router.push('/home')}
-              className="text-secondary hover:text-primary transition text-sm"
-            >
-              ✕
-            </button>
-            <ProgressBar current={currentIndex} total={questions.length} className="flex-1" />
-          </div>
+      <header className="border-b border-border bg-surface/60 backdrop-blur-sm">
+        <div className="max-w-lg mx-auto px-5 py-3 flex items-center gap-4">
+          <button onClick={() => router.push('/home')}
+            className="text-secondary hover:text-primary transition text-sm p-1">✕</button>
+          <ProgressBar current={currentIndex} total={questions.length} className="flex-1" />
         </div>
       </header>
 
-      {/* Card */}
-      <div className="flex-1 flex items-center justify-center px-4 py-8">
+      <div className="flex-1 flex items-start justify-center px-5 py-10">
         <div className="w-full max-w-lg">
-          {/* Topic info */}
           {topic && (
-            <div className="flex items-center gap-2 mb-6 justify-center">
+            <div className="flex items-center gap-2 mb-5 justify-center">
               <Badge variant={topic.paper}>{topic.paper}</Badge>
               <span className="text-secondary text-sm">{topic.name}</span>
             </div>
           )}
 
-          {/* Prompt */}
-          <div className="bg-surface border border-border rounded-lg p-8 text-center mb-4">
-            <p className="font-serif text-2xl text-primary leading-relaxed">{question.prompt}</p>
+          <div className="bg-surface border border-border rounded-2xl p-7 mb-4 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]">
+            <p className="text-muted text-xs uppercase tracking-wider mb-3">Recall this rule</p>
+            <p className="font-serif text-[1.2rem] leading-relaxed text-primary">{question.prompt}</p>
           </div>
 
-          {/* Reveal / Answer */}
           {!revealed ? (
-            <button
-              onClick={() => setRevealed(true)}
-              className="w-full border border-border text-secondary py-3 rounded-lg hover:bg-surface2 transition"
-            >
-              Reveal Answer
+            <button onClick={() => setRevealed(true)}
+              className="w-full border-2 border-dashed border-border text-secondary py-4 rounded-xl hover:border-accent/50 hover:text-primary transition text-sm">
+              Reveal answer
+              <span className="ml-2 text-muted text-xs">(Space)</span>
             </button>
           ) : (
             <>
-              <div className="bg-surface2 border border-border rounded-lg p-6 mb-4">
-                <p className="text-primary leading-relaxed whitespace-pre-line text-sm">
+              <div className="bg-surface2 border border-border rounded-2xl p-5 mb-5">
+                <p className="text-muted text-xs uppercase tracking-wider mb-2">Answer</p>
+                <p className="text-primary leading-relaxed text-sm whitespace-pre-line">
                   {question.explanation ?? 'No answer available.'}
                 </p>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  onClick={() => handleAssessment('missed_it')}
-                  className="py-3 rounded-lg border border-error/40 text-error bg-error/5 hover:bg-error/10 transition text-sm"
-                >
-                  ✗ Missed it
-                </button>
-                <button
-                  onClick={() => handleAssessment('nearly')}
-                  className="py-3 rounded-lg border border-warning/40 text-warning bg-warning/5 hover:bg-warning/10 transition text-sm"
-                >
-                  ≈ Nearly
-                </button>
-                <button
-                  onClick={() => handleAssessment('got_it')}
-                  className="py-3 rounded-lg border border-success/40 text-success bg-success/5 hover:bg-success/10 transition text-sm"
-                >
-                  ✓ Got it
-                </button>
+
+              <p className="text-center text-xs text-muted mb-3">How did you do?</p>
+              <div className="grid grid-cols-3 gap-2.5">
+                <AssessButton onClick={() => handleAssessment('missed_it')} color="error" icon="✗" label="Missed it" hint="1" />
+                <AssessButton onClick={() => handleAssessment('nearly')} color="warning" icon="≈" label="Nearly" hint="2" />
+                <AssessButton onClick={() => handleAssessment('got_it')} color="success" icon="✓" label="Got it" hint="3" />
               </div>
             </>
           )}
+
+          <p className="text-center text-xs text-muted mt-6">
+            {currentIndex + 1} of {questions.length} cards
+          </p>
         </div>
       </div>
     </main>
+  )
+}
+
+function AssessButton({ onClick, color, icon, label, hint }: {
+  onClick: () => void; color: 'error' | 'warning' | 'success'; icon: string; label: string; hint: string
+}) {
+  const styles = {
+    error:   'border-error/40 bg-error/5 text-error hover:bg-error/15',
+    warning: 'border-warning/40 bg-warning/5 text-warning hover:bg-warning/15',
+    success: 'border-success/40 bg-success/5 text-success hover:bg-success/15',
+  }
+  return (
+    <button onClick={onClick}
+      className={`flex flex-col items-center gap-1 py-3.5 rounded-xl border-2 transition-all active:scale-95 ${styles[color]}`}>
+      <span className="text-xl">{icon}</span>
+      <span className="text-xs font-medium">{label}</span>
+      <span className="text-[10px] opacity-40">{hint}</span>
+    </button>
   )
 }

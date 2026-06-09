@@ -23,7 +23,7 @@ export default async function HomePage() {
       supabase.from('user_topic_mastery').select('*').eq('user_id', user.id),
       supabase
         .from('sessions')
-        .select('*, topics:topic_ids')
+        .select('id, mode, current_question_index, total_questions, topic_ids')
         .eq('user_id', user.id)
         .eq('is_complete', false)
         .is('ended_at', null)

@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import type { SourceMaterial, Topic } from '@/types/database'
 import SourceMaterialRow from '@/components/admin/SourceMaterialRow'
+import BulkApproveButton from '@/components/admin/BulkApproveButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -124,16 +125,21 @@ export default async function AdminDashboardPage() {
           </div>
 
           {(draftQuestions ?? 0) > 0 && (
-            <div className="mt-4 flex items-center justify-between p-4 bg-warning/5 border border-warning/20 rounded-lg">
-              <p className="text-warning text-sm">
-                <strong>{draftQuestions}</strong> question{draftQuestions !== 1 ? 's' : ''} pending review
-              </p>
-              <Link
-                href="/admin/content/questions"
-                className="bg-warning/20 text-warning px-3 py-1.5 rounded-lg text-xs hover:bg-warning/30 transition"
-              >
-                Review now →
-              </Link>
+            <div className="mt-4 p-4 bg-warning/5 border border-warning/20 rounded-xl">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <p className="text-warning text-sm font-medium">
+                  {draftQuestions} draft question{draftQuestions !== 1 ? 's' : ''} awaiting review
+                </p>
+                <div className="flex items-center gap-2">
+                  <BulkApproveButton count={draftQuestions ?? 0} />
+                  <Link
+                    href="/admin/content/questions"
+                    className="border border-border text-secondary px-3 py-1.5 rounded-lg text-xs hover:bg-surface2 transition"
+                  >
+                    Review individually →
+                  </Link>
+                </div>
+              </div>
             </div>
           )}
         </section>

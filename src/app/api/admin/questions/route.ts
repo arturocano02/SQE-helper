@@ -69,3 +69,22 @@ export async function PATCH(request: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ updated: ids.length })
 }
+
+// DELETE — permanently delete selected questions
+export async function DELETE(request: Request) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single()
+  if (!profile?.is_admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const { ids }: { ids: string[] } = await request.json()
+  if (!ids?.length) return NextResponse.json({ error: 'No IDs provided' }, { status: 400 })
+
+  const admin = createAdminClient()
+  const { error } = await admin.from('questions').delete().in('id', ids)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ deleted: ids.length })
+}
