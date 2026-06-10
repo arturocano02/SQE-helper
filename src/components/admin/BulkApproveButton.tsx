@@ -16,7 +16,6 @@ export default function BulkApproveButton({ count }: BulkApproveButtonProps) {
     if (!confirm(`Approve all ${count} draft questions? They will become visible to students immediately.`)) return
     setLoading(true)
 
-    // Fetch all draft IDs, then bulk-approve
     const res = await fetch('/api/admin/questions/bulk-approve', { method: 'POST' })
     const data = await res.json()
 
@@ -30,20 +29,43 @@ export default function BulkApproveButton({ count }: BulkApproveButtonProps) {
   }
 
   if (done) {
-    return <span className="text-xs text-success font-medium">✓ All approved</span>
+    return (
+      <span className="font-sans font-medium text-xs" style={{ color: 'var(--status-correct)' }}>
+        ✓ All approved
+      </span>
+    )
   }
 
   return (
     <button
       onClick={handleApproveAll}
       disabled={loading}
-      className="bg-accent text-bg font-medium px-3 py-1.5 rounded-lg text-xs hover:opacity-90 transition disabled:opacity-50"
+      style={{
+        background: 'var(--amber)',
+        color: '#0A0A08',
+        fontFamily: 'var(--font-dm-sans)',
+        fontWeight: 500,
+        fontSize: 12,
+        padding: '6px 12px',
+        borderRadius: 6,
+        border: 'none',
+        cursor: loading ? 'not-allowed' : 'pointer',
+        opacity: loading ? 0.5 : 1,
+        transition: 'all 150ms ease',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+      }}
+      className="hover:brightness-110"
     >
       {loading ? (
-        <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 border-2 border-bg/40 border-t-bg rounded-full animate-spin" />
+        <>
+          <span
+            className="w-3 h-3 rounded-full animate-spin"
+            style={{ border: '2px solid rgba(10,10,8,0.4)', borderTopColor: '#0A0A08' }}
+          />
           Approving…
-        </span>
+        </>
       ) : (
         `Approve all ${count} →`
       )}

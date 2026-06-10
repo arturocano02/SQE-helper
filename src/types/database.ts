@@ -1,11 +1,37 @@
 export type Paper = 'FLK1' | 'FLK2'
 export type SourceMaterialStatus = 'processing' | 'done' | 'failed'
+export type ChunkExtractionStatus = 'pending' | 'extracting' | 'extracted' | 'failed'
 export type QuestionType = 'mcq' | 'flashcard'
 export type Difficulty = 'easy' | 'medium' | 'hard'
 export type QuestionStatus = 'draft' | 'approved' | 'archived'
 export type SessionMode = 'drill' | 'simulate' | 'recall'
 export type SelfAssessment = 'got_it' | 'nearly' | 'missed_it'
 export type Confidence = 'shaky' | 'okay' | 'solid'
+export type ChunkConfidence = 'unseen' | 'shaky' | 'okay' | 'solid'
+export type RuleType = 'definition' | 'threshold' | 'test' | 'exception' | 'procedure' | 'consequence' | 'general_principle' | 'uncertain'
+export type FeedbackType =
+  // Question-specific
+  | 'wrong_answer'
+  | 'poor_explanation'
+  | 'outdated_law'
+  | 'misleading_question'
+  // App-level
+  | 'bug'
+  | 'feature_request'
+  | 'content_request'
+  | 'other'
+export type FeedbackStatus = 'pending' | 'reviewed' | 'actioned' | 'dismissed'
+
+export interface Feedback {
+  id: string
+  user_id: string | null
+  question_id: string | null
+  feedback_type: FeedbackType
+  description: string
+  status: FeedbackStatus
+  admin_note: string | null
+  created_at: string
+}
 
 export interface MCQOption {
   label: 'A' | 'B' | 'C' | 'D' | 'E'
@@ -31,9 +57,47 @@ export interface Profile {
   created_at: string
 }
 
+export interface Subtopic {
+  id: string
+  topic_id: string
+  name: string
+  slug: string
+  sort_order: number
+  created_at: string
+}
+
+export interface KnowledgeChunk {
+  id: string
+  topic_id: string
+  subtopic_id: string | null
+  source_material_id: string | null
+  rule_text: string
+  exact_source_quote: string | null
+  context_text: string | null
+  source_section: string | null
+  key_terms: string[]
+  rule_type: RuleType
+  is_approved: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface UserChunkMastery {
+  id: string
+  user_id: string
+  chunk_id: string
+  confidence_level: ChunkConfidence
+  correct_count: number
+  attempt_count: number
+  last_tested_at: string | null
+  updated_at: string
+}
+
 export interface Question {
   id: string
   topic_id: string | null
+  knowledge_chunk_id: string | null
   type: QuestionType
   difficulty: Difficulty | null
   prompt: string
@@ -127,4 +191,13 @@ export interface SourceMaterial {
   error_message: string | null
   uploaded_by: string | null
   created_at: string
+  chunk_status: ChunkExtractionStatus
+  chunks_extracted: number
+  chunk_error: string | null
+}
+
+// Joined / enriched types
+export interface KnowledgeChunkWithTopic extends KnowledgeChunk {
+  topic?: Topic
+  subtopic?: Subtopic
 }

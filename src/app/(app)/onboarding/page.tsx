@@ -24,17 +24,14 @@ export default function OnboardingPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // Step 1
   const [examDate, setExamDate] = useState('')
   const [prepLevel, setPrepLevel] = useState<PrepLevel | null>(null)
-
-  // Step 2
   const [coverage, setCoverage] = useState<Map<string, TopicCoverage>>(new Map())
-
-  // Step 3
   const [file, setFile] = useState<File | null>(null)
+  const [notesContext, setNotesContext] = useState('')
   const [importing, setImporting] = useState(false)
   const [importDone, setImportDone] = useState(false)
+  const [importResult, setImportResult] = useState<{ total_covered: number; total_chunks: number } | null>(null)
 
   useEffect(() => {
     const supabase = createClient()
@@ -46,24 +43,19 @@ export default function OnboardingPage() {
     })
   }, [])
 
-  // Step 1 → save to profiles
   async function handleStep1() {
     if (!userId) return
     setLoading(true)
     const supabase = createClient()
-    await supabase.from('profiles').update({
-      exam_date: examDate || null,
-    }).eq('id', userId)
+    await supabase.from('profiles').update({ exam_date: examDate || null }).eq('id', userId)
     setLoading(false)
     setStep(2)
   }
 
-  // Toggle topic coverage
   function toggleTopic(topicId: string) {
     setCoverage(prev => {
       const next = new Map(prev)
-      const current = next.get(topicId)
-      if (current?.covered) {
+      if (next.get(topicId)?.covered) {
         next.delete(topicId)
       } else {
         next.set(topicId, { topicId, covered: true, confidence: null })
@@ -80,7 +72,6 @@ export default function OnboardingPage() {
     })
   }
 
-  // Step 2 → save coverage + mastery
   async function handleStep2() {
     if (!userId) return
     setLoading(true)
@@ -88,15 +79,10 @@ export default function OnboardingPage() {
 
     const coverageRows = Array.from(coverage.values())
       .filter(c => c.covered && c.confidence)
-      .map(c => ({
-        user_id: userId,
-        topic_id: c.topicId,
-        confidence: c.confidence!,
-      }))
+      .map(c => ({ user_id: userId, topic_id: c.topicId, confidence: c.confidence! }))
 
     if (coverageRows.length > 0) {
       await supabase.from('user_topic_coverage').upsert(coverageRows)
-
       const masteryRows = coverageRows.map(c => ({
         user_id: userId,
         topic_id: c.topic_id,
@@ -105,20 +91,30 @@ export default function OnboardingPage() {
       await supabase.from('user_topic_mastery').upsert(masteryRows)
     }
 
-    // Mark onboarding reached step 3
     await supabase.from('profiles').update({ onboarding_complete: true }).eq('id', userId)
-
     setLoading(false)
     setStep(3)
   }
 
-  // Step 3 → import file
   async function handleImport() {
     if (!file) return
     setImporting(true)
     const form = new FormData()
     form.append('file', file)
-    await fetch('/api/import', { method: 'POST', body: form })
+    if (notesContext.trim()) form.append('notes_context', notesContext.trim())
+    try {
+      const res = await fetch('/api/import', { method: 'POST', body: form })
+      const data = await res.json()
+      if (data.mode === 'chunk_coverage' && data.coverage) {
+        // Auto-confirm coverage (user can adjust later from profile)
+        await fetch('/api/import', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ coverage: data.coverage, mode: 'chunk_coverage' }),
+        })
+        setImportResult({ total_covered: data.total_covered, total_chunks: data.total_chunks })
+      }
+    } catch { /* non-fatal */ }
     setImporting(false)
     setImportDone(true)
   }
@@ -130,17 +126,37 @@ export default function OnboardingPage() {
   const flk1Topics = topics.filter(t => t.paper === 'FLK1')
   const flk2Topics = topics.filter(t => t.paper === 'FLK2')
 
+  const inputStyle: React.CSSProperties = {
+    background: 'var(--surface-3)',
+    border: '1px solid var(--surface-border)',
+    borderRadius: 8,
+    padding: '10px 14px',
+    color: 'var(--text-primary)',
+    fontFamily: 'var(--font-dm-sans)',
+    fontSize: 14,
+    outline: 'none',
+    width: '100%',
+    transition: 'all 150ms ease',
+  }
+
   return (
-    <main className="min-h-screen bg-bg px-4 py-12">
+    <main
+      className="min-h-screen px-5 py-12"
+      style={{ background: 'var(--surface-base)' }}
+    >
       <div className="max-w-2xl mx-auto">
-        {/* Progress dots */}
+        {/* Step dots */}
         <div className="flex items-center justify-center gap-2 mb-10">
           {[1, 2, 3].map(n => (
             <div
               key={n}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                n === step ? 'w-8 bg-accent' : n < step ? 'w-4 bg-accent/40' : 'w-4 bg-surface2'
-              }`}
+              style={{
+                height: 5,
+                borderRadius: 9999,
+                background: n === step ? 'var(--amber)' : n < step ? 'rgba(200,146,42,0.35)' : 'var(--surface-3)',
+                width: n === step ? 28 : 14,
+                transition: 'all 300ms ease',
+              }}
             />
           ))}
         </div>
@@ -148,22 +164,36 @@ export default function OnboardingPage() {
         {/* STEP 1 */}
         {step === 1 && (
           <div>
-            <h1 className="font-serif text-4xl text-primary mb-2">Let's get you set up</h1>
-            <p className="text-secondary mb-8">A few quick questions so we can personalise your study plan.</p>
+            <h1 className="font-serif mb-2" style={{ fontSize: '2.25rem', color: 'var(--text-primary)' }}>
+              Let&apos;s get you set up
+            </h1>
+            <p className="font-sans text-sm mb-8" style={{ color: 'var(--text-secondary)' }}>
+              A few quick questions to personalise your study plan.
+            </p>
 
             <div className="space-y-6">
               <div>
-                <label className="block text-sm text-secondary mb-2">When is your SQE1 exam? (optional)</label>
+                <label
+                  className="block font-sans text-sm mb-2"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  When is your SQE1 exam? <span style={{ color: 'var(--text-muted)' }}>(optional)</span>
+                </label>
                 <input
                   type="date"
                   value={examDate}
                   onChange={e => setExamDate(e.target.value)}
-                  className="bg-surface2 border border-border text-primary px-3 py-2 rounded-lg focus:border-accent focus:outline-none w-full"
+                  style={inputStyle}
                 />
               </div>
 
               <div>
-                <label className="block text-sm text-secondary mb-3">How far into your SQE1 prep are you?</label>
+                <label
+                  className="block font-sans text-sm mb-3"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  How far into your SQE1 prep are you?
+                </label>
                 <div className="grid grid-cols-2 gap-2">
                   {(
                     [
@@ -176,12 +206,20 @@ export default function OnboardingPage() {
                     <button
                       key={opt.value}
                       onClick={() => setPrepLevel(opt.value)}
-                      className={[
-                        'px-4 py-3 rounded-lg border text-sm text-left transition',
-                        prepLevel === opt.value
-                          ? 'bg-accent-dim border-accent text-accent'
-                          : 'bg-surface2 border-border text-secondary hover:bg-surface',
-                      ].join(' ')}
+                      style={{
+                        padding: '12px 16px',
+                        borderRadius: 8,
+                        border: prepLevel === opt.value
+                          ? '1px solid rgba(200,146,42,0.5)'
+                          : '1px solid var(--surface-border)',
+                        background: prepLevel === opt.value ? 'var(--amber-soft)' : 'var(--surface-2)',
+                        color: prepLevel === opt.value ? 'var(--amber-text)' : 'var(--text-secondary)',
+                        fontFamily: 'var(--font-dm-sans)',
+                        fontSize: 14,
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        transition: 'all 150ms ease',
+                      }}
                     >
                       {opt.label}
                     </button>
@@ -201,8 +239,12 @@ export default function OnboardingPage() {
         {/* STEP 2 */}
         {step === 2 && (
           <div>
-            <h1 className="font-serif text-4xl text-primary mb-2">Which topics have you covered?</h1>
-            <p className="text-secondary mb-8">Select the topics you've studied, then rate your confidence.</p>
+            <h1 className="font-serif mb-2" style={{ fontSize: '2.25rem', color: 'var(--text-primary)' }}>
+              Which topics have you covered?
+            </h1>
+            <p className="font-sans text-sm mb-8" style={{ color: 'var(--text-secondary)' }}>
+              Select topics you&apos;ve studied, then rate your confidence.
+            </p>
 
             {[
               { paper: 'FLK1', list: flk1Topics },
@@ -220,34 +262,62 @@ export default function OnboardingPage() {
                       <div key={topic.id}>
                         <button
                           onClick={() => toggleTopic(topic.id)}
-                          className={[
-                            'w-full text-left px-4 py-3 rounded-lg border transition',
-                            isCovered
-                              ? 'bg-accent-dim border-accent text-accent'
-                              : 'bg-surface2 border-border text-secondary hover:bg-surface',
-                          ].join(' ')}
+                          style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '12px 16px',
+                            borderRadius: 8,
+                            border: isCovered
+                              ? '1px solid rgba(200,146,42,0.5)'
+                              : '1px solid var(--surface-border)',
+                            background: isCovered ? 'var(--amber-soft)' : 'var(--surface-2)',
+                            color: isCovered ? 'var(--amber-text)' : 'var(--text-secondary)',
+                            fontFamily: 'var(--font-dm-sans)',
+                            fontSize: 14,
+                            cursor: 'pointer',
+                            transition: 'all 150ms ease',
+                          }}
                         >
                           {topic.name}
                         </button>
                         {isCovered && (
                           <div className="flex gap-2 mt-2 ml-1">
-                            <span className="text-xs text-muted self-center">Confidence:</span>
-                            {(['shaky', 'okay', 'solid'] as Confidence[]).map(conf => (
-                              <button
-                                key={conf}
-                                onClick={e => { e.stopPropagation(); setConfidence(topic.id, conf) }}
-                                className={[
-                                  'px-4 py-1.5 rounded-lg text-xs font-medium border transition capitalize',
-                                  cov?.confidence === conf
-                                    ? conf === 'shaky' ? 'bg-error/20 border-error text-error'
-                                      : conf === 'okay' ? 'bg-warning/20 border-warning text-warning'
-                                      : 'bg-success/20 border-success text-success'
-                                    : 'bg-surface2 border-border text-secondary hover:bg-surface hover:text-primary',
-                                ].join(' ')}
-                              >
-                                {conf}
-                              </button>
-                            ))}
+                            <span
+                              className="font-sans text-xs self-center"
+                              style={{ color: 'var(--text-muted)' }}
+                            >
+                              Confidence:
+                            </span>
+                            {(['shaky', 'okay', 'solid'] as Confidence[]).map(conf => {
+                              const isActive = cov?.confidence === conf
+                              const confColors = {
+                                shaky: { active: { bg: 'rgba(224,90,90,0.15)', border: 'rgba(224,90,90,0.5)', color: '#E87878' } },
+                                okay:  { active: { bg: 'rgba(200,146,42,0.15)', border: 'rgba(200,146,42,0.5)', color: 'var(--amber-text)' } },
+                                solid: { active: { bg: 'rgba(76,175,130,0.15)', border: 'rgba(76,175,130,0.5)', color: '#6ECFA3' } },
+                              }
+                              const c = confColors[conf]
+                              return (
+                                <button
+                                  key={conf}
+                                  onClick={e => { e.stopPropagation(); setConfidence(topic.id, conf) }}
+                                  style={{
+                                    padding: '4px 12px',
+                                    borderRadius: 6,
+                                    fontSize: 12,
+                                    fontFamily: 'var(--font-dm-sans)',
+                                    fontWeight: 500,
+                                    cursor: 'pointer',
+                                    transition: 'all 150ms ease',
+                                    border: isActive ? `1px solid ${c.active.border}` : '1px solid var(--surface-border)',
+                                    background: isActive ? c.active.bg : 'var(--surface-2)',
+                                    color: isActive ? c.active.color : 'var(--text-secondary)',
+                                    textTransform: 'capitalize',
+                                  }}
+                                >
+                                  {conf}
+                                </button>
+                              )
+                            })}
                           </div>
                         )}
                       </div>
@@ -269,35 +339,85 @@ export default function OnboardingPage() {
         {/* STEP 3 */}
         {step === 3 && (
           <div>
-            <h1 className="font-serif text-4xl text-primary mb-2">Personalise your starting point</h1>
-            <p className="text-secondary mb-3">
+            <h1 className="font-serif mb-2" style={{ fontSize: '2.25rem', color: 'var(--text-primary)' }}>
+              Personalise your starting point
+            </h1>
+            <p className="font-sans text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
               The platform already has a full question bank — you can start studying right now.
             </p>
-            <p className="text-secondary mb-8">
-              <strong className="text-primary">Optionally</strong>, upload your own revision notes or wrong-answer logs. We'll read them to understand where you've been struggling, and weight your early sessions towards those areas.
+            <p className="font-sans text-sm mb-7" style={{ color: 'var(--text-secondary)' }}>
+              <strong style={{ color: 'var(--text-primary)' }}>Optionally</strong>, upload your own revision notes or wrong-answer logs. We&apos;ll read them to understand where you&apos;ve been struggling, and weight your early sessions towards those areas.
             </p>
 
-            {/* What gets uploaded clarification */}
-            <div className="bg-surface2 border border-border rounded-xl p-4 mb-6 text-sm text-secondary space-y-1">
-              <p>✓ Your notes are <strong className="text-primary">private to you</strong> — they are never added to the shared question bank</p>
-              <p>✓ We extract weak areas and seed your mastery scores — nothing more</p>
-              <p>✓ You can also upload more notes later from your profile</p>
+            {/* Privacy notice */}
+            <div
+              style={{
+                background: 'var(--surface-2)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 10,
+                padding: '16px 18px',
+                marginBottom: 24,
+              }}
+            >
+              {[
+                'Your notes are private to you — never added to the shared question bank',
+                'We extract weak areas and seed your mastery scores — nothing more',
+                'You can also upload more notes later from your profile',
+              ].map((line, i) => (
+                <p key={i} className="font-sans text-sm flex gap-2 mb-1.5 last:mb-0" style={{ color: 'var(--text-secondary)' }}>
+                  <span style={{ color: 'var(--status-correct)', flexShrink: 0 }}>✓</span>
+                  {line}
+                </p>
+              ))}
             </div>
 
             {!importDone ? (
-              <div className="bg-surface border border-border rounded-xl p-6">
-                <label className="block text-sm text-secondary mb-3">
+              <div
+                style={{
+                  background: 'var(--surface-1)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 12,
+                  padding: '24px',
+                }}
+                className="card-glow"
+              >
+                <label
+                  className="block font-sans text-sm mb-3"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
                   Upload a PDF, Word (.docx), or text file
                 </label>
                 <input
                   type="file"
                   accept=".pdf,.docx,.txt"
                   onChange={e => setFile(e.target.files?.[0] ?? null)}
-                  className="block w-full text-sm text-secondary file:mr-4 file:py-2 file:px-4 file:rounded file:border file:border-border file:bg-surface2 file:text-primary hover:file:bg-surface file:cursor-pointer"
+                  className="block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded file:border file:cursor-pointer"
+                  style={{ color: 'var(--text-secondary)' }}
                 />
                 {file && (
-                  <p className="mt-2 text-xs text-muted">Selected: {file.name}</p>
+                  <p className="mt-2 font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Selected: {file.name}
+                  </p>
                 )}
+
+                <div className="mt-5">
+                  <label
+                    className="block font-sans text-sm mb-1.5"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    How are your notes structured? <span style={{ color: 'var(--text-muted)' }}>(optional — helps Claude read them better)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. bullet points per topic, handwritten scans OCR'd, condensed rules only…"
+                    value={notesContext}
+                    onChange={e => setNotesContext(e.target.value)}
+                    style={{
+                      ...inputStyle,
+                      fontSize: 13,
+                    }}
+                  />
+                </div>
 
                 <div className="flex gap-3 mt-6">
                   <Button onClick={handleImport} loading={importing} disabled={!file}>
@@ -309,10 +429,35 @@ export default function OnboardingPage() {
                 </div>
               </div>
             ) : (
-              <div className="bg-surface border border-border rounded-xl p-6 text-center">
-                <div className="text-success text-4xl mb-3">✓</div>
-                <p className="text-primary mb-1">Notes imported</p>
-                <p className="text-secondary text-sm mb-6">Your weak areas have been identified. Sessions will start there.</p>
+              <div
+                style={{
+                  background: 'rgba(76,175,130,0.08)',
+                  border: '1px solid rgba(76,175,130,0.25)',
+                  borderRadius: 12,
+                  padding: '28px 24px',
+                  textAlign: 'center',
+                }}
+              >
+                <div
+                  className="font-serif text-5xl mb-3"
+                  style={{ color: 'var(--status-correct)' }}
+                >
+                  ✓
+                </div>
+                <p className="font-sans font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+                  Notes imported
+                </p>
+                {importResult && (
+                  <p className="font-mono text-sm mb-1" style={{ color: 'var(--amber-text)' }}>
+                    {importResult.total_covered} / {importResult.total_chunks} knowledge rules mapped
+                  </p>
+                )}
+                <p
+                  className="font-sans text-sm mb-6"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Your weak areas have been identified. Sessions will start there.
+                </p>
                 <Button onClick={finish}>Go to Dashboard →</Button>
               </div>
             )}

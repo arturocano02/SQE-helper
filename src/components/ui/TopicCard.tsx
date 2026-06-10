@@ -21,44 +21,85 @@ function formatLastVisited(dateStr: string | null | undefined): string {
   const days = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24))
   if (days === 0) return 'Today'
   if (days === 1) return 'Yesterday'
-  return `${days} days ago`
+  return `${days}d ago`
+}
+
+function getMasteryBorderColor(score: number, hasMastery: boolean): string {
+  if (!hasMastery) return 'var(--status-neutral)'
+  if (score >= 70) return 'var(--status-correct)'
+  if (score >= 40) return 'var(--status-warning)'
+  return 'var(--status-wrong)'
+}
+
+function getMasteryPillClass(score: number, hasMastery: boolean): string {
+  if (!hasMastery) return 'pill-none'
+  if (score >= 70) return 'pill-correct'
+  if (score >= 40) return 'pill-warn'
+  return 'pill-wrong'
 }
 
 export default function TopicCard({ topic, mastery, selected, onClick, actions, className = '' }: TopicCardProps) {
   const score = mastery?.mastery_score ?? 0
+  const hasMastery = !!mastery
+  const borderColor = getMasteryBorderColor(score, hasMastery)
+  const isInteractive = !!onClick
 
   return (
     <div
       onClick={onClick}
+      style={{
+        background: selected ? 'var(--amber-soft)' : 'var(--surface-1)',
+        borderLeft: `3px solid ${selected ? 'var(--amber)' : borderColor}`,
+        borderTop: `1px solid ${selected ? 'rgba(200,146,42,0.35)' : 'var(--surface-border)'}`,
+        borderRight: `1px solid ${selected ? 'rgba(200,146,42,0.35)' : 'var(--surface-border)'}`,
+        borderBottom: `1px solid ${selected ? 'rgba(200,146,42,0.35)' : 'var(--surface-border)'}`,
+        borderRadius: 12,
+        padding: '16px 20px',
+        transition: 'all 150ms ease',
+      }}
       className={[
-        'bg-surface border rounded-xl p-4 transition shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]',
-        onClick ? 'cursor-pointer' : '',
-        selected
-          ? 'bg-accent-dim border-accent'
-          : 'border-border hover:bg-surface2',
+        'card-glow',
+        isInteractive ? 'cursor-pointer card-glow-hover' : '',
         className,
       ].join(' ')}
     >
       <div className="flex items-start justify-between gap-2 mb-3">
         <div className="flex-1 min-w-0">
-          <p className={`font-serif text-lg leading-tight mb-1 ${selected ? 'text-accent' : 'text-primary'}`}>
+          <p
+            className="font-serif text-lg leading-tight mb-1.5"
+            style={{ color: selected ? 'var(--amber-text)' : 'var(--text-primary)' }}
+          >
             {topic.name}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge variant={topic.paper}>{topic.paper}</Badge>
-            <span className="text-xs text-muted">{formatLastVisited(mastery?.last_visited_at)}</span>
+            <span
+              className="text-[11px] font-mono"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {formatLastVisited(mastery?.last_visited_at)}
+            </span>
           </div>
         </div>
-        <span className={`text-2xl font-serif font-semibold tabular-nums ${selected ? 'text-accent' : 'text-primary'}`}>
+
+        {/* Mastery pill */}
+        <span
+          className={`${getMasteryPillClass(score, hasMastery)} text-[11px] font-sans font-medium px-2.5 py-0.5 rounded-full shrink-0 font-mono tabular-nums`}
+        >
           {score}
         </span>
       </div>
 
-      <MasteryBar score={score} className="mb-1" />
-      <p className="text-xs text-secondary">{masteryLabel(score)}</p>
+      <MasteryBar score={score} className="mb-1.5" />
+      <p className="text-[11px] font-sans" style={{ color: 'var(--text-secondary)' }}>
+        {masteryLabel(score)}
+      </p>
 
       {actions && (
-        <div className="mt-3 pt-3 border-t border-border/50 flex gap-2">
+        <div
+          className="mt-3 pt-3 flex gap-2"
+          style={{ borderTop: '1px solid var(--surface-border)' }}
+        >
           {actions}
         </div>
       )}

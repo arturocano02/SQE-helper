@@ -5,9 +5,10 @@ import { useEffect, useState } from 'react'
 interface MasteryBarProps {
   score: number // 0–100
   className?: string
+  showLabel?: boolean
 }
 
-export default function MasteryBar({ score, className = '' }: MasteryBarProps) {
+export default function MasteryBar({ score, className = '', showLabel = false }: MasteryBarProps) {
   const [width, setWidth] = useState(0)
 
   useEffect(() => {
@@ -16,11 +17,21 @@ export default function MasteryBar({ score, className = '' }: MasteryBarProps) {
   }, [score])
 
   return (
-    <div className={`h-1 bg-surface2 rounded-full overflow-hidden ${className}`}>
+    <div className={className}>
+      {showLabel && (
+        <div className="flex justify-end mb-1">
+          <span className="font-mono text-[11px]" style={{ color: 'var(--text-muted)' }}>{score}%</span>
+        </div>
+      )}
       <div
-        className="h-full bg-accent rounded-full transition-all duration-700 ease-out"
-        style={{ width: `${width}%` }}
-      />
+        className="rounded-full overflow-hidden"
+        style={{ height: 6, background: 'var(--surface-3)' }}
+      >
+        <div
+          className="h-full rounded-full progress-fill transition-all duration-700 ease-out"
+          style={{ width: `${width}%` }}
+        />
+      </div>
     </div>
   )
 }

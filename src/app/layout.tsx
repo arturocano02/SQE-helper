@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Cormorant_Garamond, DM_Sans, DM_Mono } from 'next/font/google'
+import FeedbackButton from '@/components/ui/FeedbackButton'
 import './globals.css'
 
 const cormorant = Cormorant_Garamond({
@@ -28,7 +29,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${cormorant.variable} ${dmSans.variable} ${dmMono.variable}`}>
-      <body className="bg-base text-primary antialiased">{children}</body>
+      <body className="bg-base text-primary antialiased">
+        {children}
+        <FeedbackButton />
+      </body>
     </html>
   )
 }

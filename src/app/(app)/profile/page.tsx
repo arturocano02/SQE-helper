@@ -7,6 +7,12 @@ import MasteryBar from '@/components/ui/MasteryBar'
 
 export const dynamic = 'force-dynamic'
 
+function getMasteryColor(score: number): string {
+  if (score >= 70) return 'var(--status-correct)'
+  if (score >= 40) return 'var(--status-warning)'
+  return 'var(--status-wrong)'
+}
+
 export default async function ProfilePage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -42,97 +48,210 @@ export default async function ProfilePage() {
   })
 
   return (
-    <main className="min-h-screen bg-bg">
-      <header className="border-b border-border">
+    <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
+      <header style={{ borderBottom: '1px solid var(--surface-border)' }}>
         <div className="max-w-2xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link href="/home" className="text-secondary text-sm hover:text-primary transition">← Dashboard</Link>
-          <h1 className="font-serif text-xl text-primary">Profile</h1>
+          <Link
+            href="/home"
+            className="font-sans text-sm transition"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            ← Dashboard
+          </Link>
+          <h1 className="font-serif text-xl" style={{ color: 'var(--text-primary)' }}>Profile</h1>
           <div className="w-16" />
         </div>
       </header>
 
-      <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
+      <div className="max-w-2xl mx-auto px-6 py-10 space-y-6">
 
         {/* Identity */}
-        <div className="bg-surface border border-border rounded-xl p-6 flex items-center gap-5">
+        <div
+          style={{
+            background: 'var(--surface-1)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 14,
+            padding: '20px 24px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 20,
+          }}
+          className="card-glow"
+        >
           {p?.avatar_url ? (
-            <img src={p.avatar_url} alt="Avatar" className="w-14 h-14 rounded-full" />
+            <img src={p.avatar_url} alt="Avatar" className="w-14 h-14 rounded-full shrink-0" />
           ) : (
-            <div className="w-14 h-14 rounded-full bg-accent-dim border border-accent/30 flex items-center justify-center">
-              <span className="font-serif text-xl text-accent">
+            <div
+              className="shrink-0 flex items-center justify-center"
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: '50%',
+                background: 'var(--amber-soft)',
+                border: '1px solid rgba(200,146,42,0.35)',
+              }}
+            >
+              <span className="font-serif text-xl" style={{ color: 'var(--amber)' }}>
                 {(p?.name ?? user.email ?? '?')[0].toUpperCase()}
               </span>
             </div>
           )}
           <div className="flex-1 min-w-0">
-            <p className="text-primary font-medium truncate">{p?.name ?? 'No name set'}</p>
-            <p className="text-secondary text-sm truncate">{user.email}</p>
-            <p className="text-muted text-xs mt-1">Joined {joinedDate}</p>
+            <p className="font-sans font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+              {p?.name ?? 'No name set'}
+            </p>
+            <p className="font-sans text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
+              {user.email}
+            </p>
+            <p className="font-mono text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              Joined {joinedDate}
+            </p>
           </div>
           {p?.is_admin && (
-            <span className="text-xs border border-accent/40 text-accent px-2 py-1 rounded">Admin</span>
+            <span
+              className="font-sans text-xs px-2 py-1 rounded shrink-0"
+              style={{
+                border: '1px solid rgba(200,146,42,0.4)',
+                color: 'var(--amber-text)',
+              }}
+            >
+              Admin
+            </span>
           )}
         </div>
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3">
-          <div className="bg-surface border border-border rounded-xl p-4 text-center">
-            <p className="font-serif text-3xl text-primary">{totalSessions}</p>
-            <p className="text-secondary text-xs mt-1">Sessions</p>
-          </div>
-          <div className="bg-surface border border-border rounded-xl p-4 text-center">
-            <p className="font-serif text-3xl text-primary">{totalAnswers}</p>
-            <p className="text-secondary text-xs mt-1">Questions answered</p>
-          </div>
-          <div className="bg-surface border border-border rounded-xl p-4 text-center">
-            <p className="font-serif text-3xl text-primary">{avgScore !== null ? `${avgScore}%` : '—'}</p>
-            <p className="text-secondary text-xs mt-1">Avg score</p>
-          </div>
+          {[
+            { value: totalSessions, label: 'Sessions' },
+            { value: totalAnswers, label: 'Questions answered' },
+            { value: avgScore !== null ? `${avgScore}%` : '—', label: 'Avg score' },
+          ].map(({ value, label }) => (
+            <div
+              key={label}
+              style={{
+                background: 'var(--surface-1)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 12,
+                padding: '16px',
+                textAlign: 'center',
+              }}
+              className="card-glow"
+            >
+              <p className="font-serif text-3xl tabular-nums" style={{ color: 'var(--text-primary)' }}>
+                {value}
+              </p>
+              <p className="font-sans text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{label}</p>
+            </div>
+          ))}
         </div>
 
         {/* Overall mastery */}
-        <div className="bg-surface border border-border rounded-xl p-5">
+        <div
+          style={{
+            background: 'var(--surface-1)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 12,
+            padding: '20px 24px',
+          }}
+          className="card-glow"
+        >
           <div className="flex items-center justify-between mb-3">
-            <p className="text-secondary text-sm">Overall mastery</p>
-            <p className="font-serif text-2xl text-primary">{overallMastery}</p>
+            <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>Overall mastery</p>
+            <p
+              className="font-serif text-2xl tabular-nums"
+              style={{ color: getMasteryColor(overallMastery) }}
+            >
+              {overallMastery}
+            </p>
           </div>
           <MasteryBar score={overallMastery} />
-          <p className="text-xs text-muted mt-2">Average across all 12 topics</p>
+          <p className="font-sans text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+            Average across all 12 topics
+          </p>
         </div>
 
         {/* Exam date */}
         {p?.exam_date && (
-          <div className="bg-surface border border-border rounded-xl p-5">
-            <p className="text-secondary text-sm mb-1">Exam date</p>
-            <p className="text-primary">
+          <div
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 12,
+              padding: '20px 24px',
+            }}
+            className="card-glow"
+          >
+            <p className="font-sans text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>Exam date</p>
+            <p className="font-sans" style={{ color: 'var(--text-primary)' }}>
               {new Date(p.exam_date).toLocaleDateString('en-GB', {
                 day: 'numeric', month: 'long', year: 'numeric',
               })}
             </p>
             {(() => {
               const days = Math.ceil((new Date(p.exam_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-              if (days < 0) return <p className="text-muted text-xs mt-1">Exam has passed</p>
-              return <p className="text-accent text-xs mt-1">{days} days to go</p>
+              if (days < 0) {
+                return (
+                  <p className="font-mono text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                    Exam has passed
+                  </p>
+                )
+              }
+              return (
+                <p className="font-mono text-xs mt-1" style={{ color: 'var(--amber-text)' }}>
+                  {days} days to go
+                </p>
+              )
             })()}
           </div>
         )}
 
         {/* Quick links */}
         <div className="grid grid-cols-2 gap-3">
-          <Link href="/progress" className="bg-surface border border-border rounded-xl p-4 hover:bg-surface2 transition">
-            <p className="text-primary text-sm font-medium">View Progress</p>
-            <p className="text-secondary text-xs mt-0.5">Mastery by topic</p>
+          <Link
+            href="/progress"
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 12,
+              padding: '16px',
+              display: 'block',
+              transition: 'all 150ms ease',
+            }}
+            className="card-glow card-glow-hover"
+          >
+            <p className="font-sans text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              View Progress
+            </p>
+            <p className="font-sans text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              Mastery by topic
+            </p>
           </Link>
           {p?.is_admin && (
-            <Link href="/admin" className="bg-surface border border-border rounded-xl p-4 hover:bg-surface2 transition">
-              <p className="text-primary text-sm font-medium">Admin Dashboard</p>
-              <p className="text-secondary text-xs mt-0.5">Content &amp; analytics</p>
+            <Link
+              href="/admin"
+              style={{
+                background: 'var(--surface-1)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 12,
+                padding: '16px',
+                display: 'block',
+                transition: 'all 150ms ease',
+              }}
+              className="card-glow card-glow-hover"
+            >
+              <p className="font-sans text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                Admin Dashboard
+              </p>
+              <p className="font-sans text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                Content &amp; analytics
+              </p>
             </Link>
           )}
         </div>
 
         {/* Sign out */}
-        <div className="pt-4 border-t border-border">
+        <div className="pt-4" style={{ borderTop: '1px solid var(--surface-border)' }}>
           <SignOutButton />
         </div>
 

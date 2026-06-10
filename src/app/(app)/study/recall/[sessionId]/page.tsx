@@ -25,8 +25,10 @@ export default function RecallSessionPage() {
       const { data: session } = await supabase.from('sessions').select('*').eq('id', sessionId).single()
       if (!session?.question_ids?.length) { router.push('/study/recall'); return }
 
-      const { data: qs } = await supabase.from('questions').select('*').in('id', session.question_ids as string[])
-      const { data: topicsData } = await supabase.from('topics').select('*')
+      const { data: qs } = await supabase
+        .from('questions').select('*').in('id', session.question_ids as string[])
+      const { data: topicsData } = await supabase
+        .from('topics').select('*')
         .in('id', (qs ?? []).map((q: Question) => q.topic_id).filter(Boolean) as string[])
 
       const topicMap = new Map(((topicsData ?? []) as Topic[]).map(t => [t.id, t]))
@@ -85,19 +87,59 @@ export default function RecallSessionPage() {
   }, [revealed, handleAssessment])
 
   if (loading || questions.length === 0) {
-    return <div className="min-h-screen bg-bg flex items-center justify-center"><LoadingSpinner size="lg" /></div>
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center"
+        style={{ background: 'var(--surface-base)' }}
+      >
+        <LoadingSpinner size="lg" />
+      </div>
+    )
   }
 
   const question = questions[currentIndex]
   const topic = question.topic_id ? topics.get(question.topic_id) : undefined
 
   return (
-    <main className="min-h-screen bg-bg flex flex-col">
-      <header className="border-b border-border bg-surface/60 backdrop-blur-sm">
+    <main
+      className="min-h-screen flex flex-col"
+      style={{ background: 'var(--surface-base)' }}
+    >
+      {/* Header */}
+      <header
+        style={{
+          borderBottom: '1px solid var(--surface-border)',
+          background: 'rgba(10,10,8,0.90)',
+          backdropFilter: 'blur(8px)',
+          position: 'sticky',
+          top: 0,
+          zIndex: 10,
+        }}
+      >
         <div className="max-w-lg mx-auto px-5 py-3 flex items-center gap-4">
-          <button onClick={() => router.push('/home')}
-            className="text-secondary hover:text-primary transition text-sm p-1">✕</button>
-          <ProgressBar current={currentIndex} total={questions.length} className="flex-1" />
+          <button
+            onClick={() => router.push('/home')}
+            style={{
+              color: 'var(--text-muted)',
+              fontFamily: 'var(--font-dm-sans)',
+              fontSize: 13,
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '4px 0',
+              transition: 'color 150ms ease',
+            }}
+            className="hover:text-[var(--text-primary)] shrink-0"
+          >
+            ✕
+          </button>
+          <ProgressBar current={currentIndex} total={questions.length} className="flex-1" hideCount />
+          <span
+            className="font-mono text-[12px] tabular-nums shrink-0"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {currentIndex + 1}&thinsp;/&thinsp;{questions.length}
+          </span>
         </div>
       </header>
 
@@ -106,62 +148,173 @@ export default function RecallSessionPage() {
           {topic && (
             <div className="flex items-center gap-2 mb-5 justify-center">
               <Badge variant={topic.paper}>{topic.paper}</Badge>
-              <span className="text-secondary text-sm">{topic.name}</span>
+              <span className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
+                {topic.name}
+              </span>
             </div>
           )}
 
-          <div className="bg-surface border border-border rounded-2xl p-7 mb-4 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]">
-            <p className="text-muted text-xs uppercase tracking-wider mb-3">Recall this rule</p>
-            <p className="font-serif text-[1.2rem] leading-relaxed text-primary">{question.prompt}</p>
+          {/* Prompt card */}
+          <div
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 16,
+              padding: '28px 24px',
+              marginBottom: 16,
+            }}
+            className="card-glow"
+          >
+            <p
+              className="font-sans text-[10px] uppercase tracking-widest mb-4"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Recall this rule
+            </p>
+            <p
+              className="font-serif leading-relaxed"
+              style={{ fontSize: '1.2rem', color: 'var(--text-primary)' }}
+            >
+              {question.prompt}
+            </p>
           </div>
 
           {!revealed ? (
-            <button onClick={() => setRevealed(true)}
-              className="w-full border-2 border-dashed border-border text-secondary py-4 rounded-xl hover:border-accent/50 hover:text-primary transition text-sm">
+            <button
+              onClick={() => setRevealed(true)}
+              style={{
+                width: '100%',
+                border: '2px dashed var(--surface-border)',
+                borderRadius: 12,
+                padding: '18px',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                fontFamily: 'var(--font-dm-sans)',
+                fontSize: 14,
+                cursor: 'pointer',
+                transition: 'all 150ms ease',
+              }}
+              className="hover:border-[rgba(200,146,42,0.4)] hover:text-[var(--text-primary)]"
+            >
               Reveal answer
-              <span className="ml-2 text-muted text-xs">(Space)</span>
+              <span
+                className="ml-2 font-mono text-xs"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                (Space)
+              </span>
             </button>
           ) : (
             <>
-              <div className="bg-surface2 border border-border rounded-2xl p-5 mb-5">
-                <p className="text-muted text-xs uppercase tracking-wider mb-2">Answer</p>
-                <p className="text-primary leading-relaxed text-sm whitespace-pre-line">
+              {/* Answer card */}
+              <div
+                style={{
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 14,
+                  padding: '20px 22px',
+                  marginBottom: 20,
+                }}
+              >
+                <p
+                  className="font-sans text-[10px] uppercase tracking-widest mb-3"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Answer
+                </p>
+                <p
+                  className="font-sans text-sm leading-relaxed whitespace-pre-line"
+                  style={{ color: 'var(--text-primary)' }}
+                >
                   {question.explanation ?? 'No answer available.'}
                 </p>
               </div>
 
-              <p className="text-center text-xs text-muted mb-3">How did you do?</p>
+              <p
+                className="text-center font-sans text-xs mb-3"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                How did you do?
+              </p>
               <div className="grid grid-cols-3 gap-2.5">
-                <AssessButton onClick={() => handleAssessment('missed_it')} color="error" icon="✗" label="Missed it" hint="1" />
-                <AssessButton onClick={() => handleAssessment('nearly')} color="warning" icon="≈" label="Nearly" hint="2" />
-                <AssessButton onClick={() => handleAssessment('got_it')} color="success" icon="✓" label="Got it" hint="3" />
+                <AssessButton
+                  onClick={() => handleAssessment('missed_it')}
+                  color="wrong"
+                  icon="✗"
+                  label="Missed it"
+                  hint="1"
+                />
+                <AssessButton
+                  onClick={() => handleAssessment('nearly')}
+                  color="warn"
+                  icon="≈"
+                  label="Nearly"
+                  hint="2"
+                />
+                <AssessButton
+                  onClick={() => handleAssessment('got_it')}
+                  color="correct"
+                  icon="✓"
+                  label="Got it"
+                  hint="3"
+                />
               </div>
             </>
           )}
-
-          <p className="text-center text-xs text-muted mt-6">
-            {currentIndex + 1} of {questions.length} cards
-          </p>
         </div>
       </div>
     </main>
   )
 }
 
-function AssessButton({ onClick, color, icon, label, hint }: {
-  onClick: () => void; color: 'error' | 'warning' | 'success'; icon: string; label: string; hint: string
+function AssessButton({
+  onClick,
+  color,
+  icon,
+  label,
+  hint,
+}: {
+  onClick: () => void
+  color: 'wrong' | 'warn' | 'correct'
+  icon: string
+  label: string
+  hint: string
 }) {
-  const styles = {
-    error:   'border-error/40 bg-error/5 text-error hover:bg-error/15',
-    warning: 'border-warning/40 bg-warning/5 text-warning hover:bg-warning/15',
-    success: 'border-success/40 bg-success/5 text-success hover:bg-success/15',
+  const colorMap = {
+    wrong:   { border: 'rgba(224,90,90,0.35)',  bg: 'rgba(224,90,90,0.07)',  text: '#E87878',            hover: 'rgba(224,90,90,0.14)' },
+    warn:    { border: 'rgba(200,146,42,0.35)',  bg: 'rgba(200,146,42,0.07)', text: 'var(--amber-text)',  hover: 'rgba(200,146,42,0.14)' },
+    correct: { border: 'rgba(76,175,130,0.35)',  bg: 'rgba(76,175,130,0.07)', text: '#6ECFA3',            hover: 'rgba(76,175,130,0.14)' },
   }
+  const c = colorMap[color]
+
   return (
-    <button onClick={onClick}
-      className={`flex flex-col items-center gap-1 py-3.5 rounded-xl border-2 transition-all active:scale-95 ${styles[color]}`}>
-      <span className="text-xl">{icon}</span>
-      <span className="text-xs font-medium">{label}</span>
-      <span className="text-[10px] opacity-40">{hint}</span>
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        flexDirection: 'column' as const,
+        alignItems: 'center',
+        gap: 4,
+        padding: '14px 8px',
+        borderRadius: 12,
+        border: `1px solid ${c.border}`,
+        background: c.bg,
+        color: c.text,
+        cursor: 'pointer',
+        transition: 'all 150ms ease',
+        fontFamily: 'var(--font-dm-sans)',
+      }}
+      className="active:scale-95"
+      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = c.hover }}
+      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = c.bg }}
+    >
+      <span style={{ fontSize: 20 }}>{icon}</span>
+      <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
+      <span
+        style={{ fontSize: 10, opacity: 0.4, fontFamily: 'var(--font-dm-mono)' }}
+      >
+        {hint}
+      </span>
     </button>
   )
 }

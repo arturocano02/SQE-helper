@@ -17,7 +17,8 @@ export async function POST(request: Request) {
   const body: CreateSessionBody = await request.json()
   const { mode, topic_ids, difficulty, count = 25 } = body
 
-  if (!topic_ids || topic_ids.length === 0) {
+  // simulate mode can pass empty topic_ids — means all topics
+  if (mode !== 'simulate' && (!topic_ids || topic_ids.length === 0)) {
     return NextResponse.json({ error: 'No topics selected' }, { status: 400 })
   }
 
@@ -32,11 +33,18 @@ export async function POST(request: Request) {
     is_admin: false,
   }, { onConflict: 'id', ignoreDuplicates: true })
 
+  // For simulate mode: fetch all topic IDs if none provided
+  let resolvedTopicIds = topic_ids
+  if (mode === 'simulate' && (!topic_ids || topic_ids.length === 0)) {
+    const { data: allTopics } = await admin.from('topics').select('id')
+    resolvedTopicIds = (allTopics ?? []).map((t: { id: string }) => t.id)
+  }
+
   // Build question query
   let query = admin
     .from('questions')
     .select('id, topic_id')
-    .in('topic_id', topic_ids)
+    .in('topic_id', resolvedTopicIds)
     .eq('status', 'approved')
     .eq('type', mode === 'recall' ? 'flashcard' : 'mcq')
 

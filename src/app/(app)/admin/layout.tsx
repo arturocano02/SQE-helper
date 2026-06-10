@@ -20,25 +20,47 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!profile?.is_admin) redirect('/home')
 
   return (
-    <div className="min-h-screen bg-bg">
-      <header className="border-b border-border bg-surface sticky top-0 z-20">
+    <div className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
+      <header
+        className="sticky top-0 z-20"
+        style={{
+          background: 'var(--surface-1)',
+          borderBottom: '1px solid var(--surface-border)',
+        }}
+      >
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <div className="flex items-center gap-2.5">
-              <span className="font-serif text-lg text-primary">SQE1</span>
-              <span className="flex items-center gap-1 text-xs border border-accent/40 text-accent px-1.5 py-0.5 rounded">
-                <AdminIcon size={11} />
+              <span
+                className="font-serif text-lg"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                SQE1
+              </span>
+              <span
+                className="flex items-center gap-1 text-[10px] font-sans px-1.5 py-0.5 rounded"
+                style={{
+                  border: '1px solid rgba(200,146,42,0.4)',
+                  color: 'var(--amber-text)',
+                }}
+              >
+                <AdminIcon size={10} />
                 Admin
               </span>
             </div>
-            <nav className="flex items-center gap-1">
-              <AdminNavLink href="/admin" icon={<AdminIcon size={15} />} label="Dashboard" />
-              <AdminNavLink href="/admin/content/upload" icon={<UploadIcon size={15} />} label="Upload" />
-              <AdminNavLink href="/admin/content/questions" icon={<QuestionIcon size={15} />} label="Questions" />
+            <nav className="flex items-center gap-0.5">
+              <AdminNavLink href="/admin" icon={<AdminIcon size={14} />} label="Dashboard" />
+              <AdminNavLink href="/admin/content/upload" icon={<UploadIcon size={14} />} label="Upload" />
+              <AdminNavLink href="/admin/content/questions" icon={<QuestionIcon size={14} />} label="Questions" />
             </nav>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-xs text-muted hidden sm:block">{profile.name ?? user.email}</span>
+            <span
+              className="font-sans text-xs hidden sm:block"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {profile.name ?? user.email}
+            </span>
             <SignOutButton compact />
           </div>
         </div>
@@ -52,7 +74,8 @@ function AdminNavLink({ href, icon, label }: { href: string; icon: React.ReactNo
   return (
     <Link
       href={href}
-      className="flex items-center gap-1.5 text-secondary hover:text-primary px-3 py-1.5 rounded hover:bg-surface2 transition text-sm"
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded transition text-sm font-sans"
+      style={{ color: 'var(--text-secondary)', transition: 'all 150ms ease' }}
     >
       {icon}
       <span>{label}</span>

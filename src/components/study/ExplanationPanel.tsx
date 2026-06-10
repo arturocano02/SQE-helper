@@ -21,29 +21,55 @@ export default function ExplanationPanel({
   }, [])
 
   return (
-    <div className={[
-      'transition-all duration-300 ease-out mt-6',
-      visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3',
-    ].join(' ')}>
-
+    <div
+      className={[
+        'transition-all duration-300 ease-out mt-6',
+        visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3',
+      ].join(' ')}
+    >
       {/* Verdict banner */}
-      <div className={[
-        'flex items-center gap-3 px-4 py-3 rounded-xl mb-4',
-        wasCorrect ? 'bg-success/10 border border-success/25' : 'bg-error/10 border border-error/25',
-      ].join(' ')}>
-        <span className={[
-          'flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold',
-          wasCorrect ? 'bg-success text-bg' : 'bg-error text-bg',
-        ].join(' ')}>
+      <div
+        style={{
+          background: wasCorrect ? 'rgba(76,175,130,0.10)' : 'rgba(224,90,90,0.10)',
+          border: `1px solid ${wasCorrect ? 'rgba(76,175,130,0.30)' : 'rgba(224,90,90,0.30)'}`,
+          borderRadius: 10,
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <span
+          style={{
+            flexShrink: 0,
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: wasCorrect ? 'var(--status-correct)' : 'var(--status-wrong)',
+            color: '#0A0A08',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 14,
+            fontWeight: 700,
+          }}
+        >
           {wasCorrect ? '✓' : '✗'}
         </span>
         <div className="flex-1">
-          <p className={`font-medium text-sm ${wasCorrect ? 'text-success' : 'text-error'}`}>
+          <p
+            className="font-sans font-medium text-sm"
+            style={{ color: wasCorrect ? 'var(--status-correct)' : 'var(--status-wrong)' }}
+          >
             {wasCorrect ? 'Correct' : 'Incorrect'}
           </p>
           {!wasCorrect && correctAnswer && (
-            <p className="text-secondary text-xs mt-0.5">
-              The correct answer was <strong className="text-primary">{correctAnswer}</strong>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              Correct answer:{' '}
+              <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-dm-mono)' }}>
+                {correctAnswer}
+              </strong>
             </p>
           )}
         </div>
@@ -51,23 +77,89 @@ export default function ExplanationPanel({
 
       {/* Explanation */}
       {explanation && (
-        <div className="bg-surface border border-border rounded-xl p-5 mb-4">
-          <p className="text-xs font-medium text-secondary uppercase tracking-wider mb-3">Explanation</p>
-          <p className="text-sm text-primary leading-relaxed whitespace-pre-line">{explanation}</p>
+        <div
+          style={{
+            background: 'var(--surface-2)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 10,
+            padding: '18px 20px',
+            marginBottom: 16,
+          }}
+        >
+          <p
+            className="text-[10px] font-sans font-medium uppercase tracking-widest mb-3"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Explanation
+          </p>
+          <p
+            className="text-sm leading-relaxed whitespace-pre-line"
+            style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-dm-sans)' }}
+          >
+            {explanation}
+          </p>
         </div>
       )}
 
       {/* Next button */}
       <button
         onClick={onNext}
-        className="w-full flex items-center justify-center gap-2 bg-accent text-bg font-medium py-3.5 rounded-xl hover:opacity-90 active:scale-[0.99] transition-all focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-bg"
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          background: 'var(--amber)',
+          color: '#0A0A08',
+          fontFamily: 'var(--font-dm-sans)',
+          fontWeight: 500,
+          fontSize: 14,
+          padding: '14px 24px',
+          borderRadius: 8,
+          border: 'none',
+          cursor: 'pointer',
+          transition: 'all 150ms ease',
+        }}
+        className="hover:brightness-110 active:scale-[0.98]"
       >
         {isLast ? 'See Results' : 'Next Question'}
-        <span className="text-bg/70 text-xs">→</span>
+        <span style={{ opacity: 0.6, fontSize: 16 }}>→</span>
       </button>
 
-      <p className="text-center text-xs text-muted mt-2">
-        Press <kbd className="px-1.5 py-0.5 bg-surface2 border border-border rounded text-xs">Space</kbd> or <kbd className="px-1.5 py-0.5 bg-surface2 border border-border rounded text-xs">→</kbd> to continue
+      <p
+        className="text-center text-[11px] mt-2"
+        style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-dm-sans)' }}
+      >
+        Press{' '}
+        <kbd
+          style={{
+            padding: '2px 6px',
+            background: 'var(--surface-3)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 4,
+            fontFamily: 'var(--font-dm-mono)',
+            fontSize: 11,
+            color: 'var(--text-secondary)',
+          }}
+        >
+          Space
+        </kbd>
+        {' '}or{' '}
+        <kbd
+          style={{
+            padding: '2px 6px',
+            background: 'var(--surface-3)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 4,
+            fontFamily: 'var(--font-dm-mono)',
+            fontSize: 11,
+            color: 'var(--text-secondary)',
+          }}
+        >
+          →
+        </kbd>
+        {' '}to continue
       </p>
     </div>
   )

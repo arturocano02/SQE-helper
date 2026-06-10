@@ -46,7 +46,9 @@ export interface TextChunk {
 function isSectionHeader(line: string): boolean {
   const t = line.trim()
   if (t.length < 4) return false
-  // ALL CAPS, must contain at least one letter
+  // Reject TOC entries: ALL CAPS line ending with a page number (e.g. "SHAREHOLDERS  13")
+  if (/\s+\d+\s*$/.test(t)) return false
+  // Must be ALL CAPS with at least one letter
   return t === t.toUpperCase() && /[A-Z]/.test(t)
 }
 

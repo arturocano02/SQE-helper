@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react'
 import type { Question, Topic, MCQOption, QuestionStatus } from '@/types/database'
 import Button from '@/components/ui/Button'
-import Badge from '@/components/ui/Badge'
 
 interface QuestionEditPanelProps {
   question: Question
@@ -76,21 +75,73 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
 
   const options = (form.options ?? []) as MCQOption[]
 
+  const selectStyle: React.CSSProperties = {
+    width: '100%',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--surface-border)',
+    color: 'var(--text-primary)',
+    padding: '8px 12px',
+    borderRadius: 8,
+    fontSize: 13,
+    fontFamily: 'var(--font-dm-sans)',
+    outline: 'none',
+  }
+
+  const textareaStyle: React.CSSProperties = {
+    width: '100%',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--surface-border)',
+    color: 'var(--text-primary)',
+    padding: '8px 12px',
+    borderRadius: 8,
+    fontSize: 13,
+    fontFamily: 'var(--font-dm-sans)',
+    outline: 'none',
+    resize: 'none' as const,
+    lineHeight: 1.6,
+  }
+
+  const statusTextColor: Record<QuestionStatus, string> = {
+    draft: 'var(--status-warning)',
+    approved: 'var(--status-correct)',
+    archived: 'var(--text-muted)',
+  }
+
   return (
-    <div className="w-96 shrink-0 bg-surface border border-border rounded-xl p-5 max-h-[calc(100vh-120px)] overflow-y-auto">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-serif text-lg text-primary">Edit Question</h3>
-        <button onClick={onClose} className="text-secondary hover:text-primary transition text-sm">✕</button>
+    <div
+      style={{
+        width: 384,
+        flexShrink: 0,
+        background: 'var(--surface-1)',
+        border: '1px solid var(--surface-border)',
+        borderRadius: 14,
+        padding: 20,
+        maxHeight: 'calc(100vh - 120px)',
+        overflowY: 'auto',
+      }}
+      className="card-glow"
+    >
+      <div className="flex items-center justify-between mb-5">
+        <h3 className="font-serif text-lg" style={{ color: 'var(--text-primary)' }}>Edit Question</h3>
+        <button
+          onClick={onClose}
+          className="font-sans text-sm transition"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}
+        >
+          ✕
+        </button>
       </div>
 
       <div className="space-y-4">
         {/* Topic */}
         <div>
-          <label className="block text-xs text-secondary mb-1">Topic</label>
+          <label className="block font-sans text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>
+            Topic
+          </label>
           <select
             value={form.topic_id ?? ''}
             onChange={e => setForm(f => ({ ...f, topic_id: e.target.value || null }))}
-            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none"
+            style={selectStyle}
           >
             <option value="">— Select topic —</option>
             {topics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -100,22 +151,22 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
         {/* Type + Difficulty */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-secondary mb-1">Type</label>
+            <label className="block font-sans text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Type</label>
             <select
               value={form.type}
               onChange={e => setForm(f => ({ ...f, type: e.target.value as Question['type'] }))}
-              className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none"
+              style={selectStyle}
             >
               <option value="mcq">MCQ</option>
               <option value="flashcard">Flashcard</option>
             </select>
           </div>
           <div>
-            <label className="block text-xs text-secondary mb-1">Difficulty</label>
+            <label className="block font-sans text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Difficulty</label>
             <select
               value={form.difficulty ?? ''}
               onChange={e => setForm(f => ({ ...f, difficulty: (e.target.value || null) as Question['difficulty'] }))}
-              className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none"
+              style={selectStyle}
             >
               <option value="">— Select —</option>
               <option value="easy">Easy</option>
@@ -127,38 +178,55 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
 
         {/* Prompt */}
         <div>
-          <label className="block text-xs text-secondary mb-1">Prompt</label>
+          <label className="block font-sans text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Prompt</label>
           <textarea
             value={form.prompt}
             onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
             rows={4}
-            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none resize-none"
+            style={textareaStyle}
           />
         </div>
 
         {/* Options (MCQ only) */}
         {form.type === 'mcq' && options.length > 0 && (
           <div>
-            <label className="block text-xs text-secondary mb-2">Options</label>
+            <label className="block font-sans text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>Options</label>
             <div className="space-y-2">
               {options.map((opt, i) => (
                 <div key={opt.label} className="flex items-start gap-2">
-                  <span className="text-xs text-secondary mt-2 w-4 shrink-0">{opt.label}</span>
+                  <span
+                    className="font-mono text-xs mt-2 shrink-0"
+                    style={{ width: 16, color: 'var(--text-secondary)' }}
+                  >
+                    {opt.label}
+                  </span>
                   <input
                     value={opt.text}
                     onChange={e => updateOption(i, e.target.value)}
-                    className="flex-1 bg-surface2 border border-border text-primary px-2 py-1.5 rounded-lg text-xs focus:border-accent focus:outline-none"
+                    className="flex-1"
+                    style={{
+                      background: 'var(--surface-2)',
+                      border: '1px solid var(--surface-border)',
+                      color: 'var(--text-primary)',
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontFamily: 'var(--font-dm-sans)',
+                      outline: 'none',
+                    }}
                   />
                 </div>
               ))}
             </div>
 
             <div className="mt-3">
-              <label className="block text-xs text-secondary mb-1">Correct Answer</label>
+              <label className="block font-sans text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>
+                Correct Answer
+              </label>
               <select
                 value={form.correct_answer ?? ''}
                 onChange={e => setForm(f => ({ ...f, correct_answer: e.target.value || null }))}
-                className="bg-surface2 border border-border text-primary px-3 py-1.5 rounded-lg text-sm focus:border-accent focus:outline-none"
+                style={{ ...selectStyle, width: 'auto' }}
               >
                 <option value="">— Select —</option>
                 {['A', 'B', 'C', 'D', 'E'].map(l => <option key={l} value={l}>{l}</option>)}
@@ -169,26 +237,35 @@ export default function QuestionEditPanel({ question, topics, onSave, onClose }:
 
         {/* Explanation */}
         <div>
-          <label className="block text-xs text-secondary mb-1">Explanation</label>
+          <label className="block font-sans text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Explanation</label>
           <textarea
             value={form.explanation ?? ''}
             onChange={e => setForm(f => ({ ...f, explanation: e.target.value }))}
             rows={6}
-            className="w-full bg-surface2 border border-border text-primary px-3 py-2 rounded-lg text-sm focus:border-accent focus:outline-none resize-none"
+            style={textareaStyle}
           />
         </div>
 
         {/* Status display */}
         <div className="flex items-center gap-2">
-          <span className="text-xs text-secondary">Status:</span>
-          <span className="text-xs capitalize text-primary">{form.status}</span>
+          <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>Status:</span>
+          <span
+            className="font-sans text-xs capitalize"
+            style={{ color: statusTextColor[form.status] }}
+          >
+            {form.status}
+          </span>
         </div>
 
         {/* Actions */}
-        <div className="flex flex-col gap-2 pt-2 border-t border-border">
+        <div
+          className="flex flex-col gap-2 pt-3"
+          style={{ borderTop: '1px solid var(--surface-border)' }}
+        >
           {form.status !== 'approved' && (
             <Button onClick={handleApprove} loading={approving} className="w-full justify-center">
-              Approve <span className="text-bg/60 text-xs ml-1">(A)</span>
+              Approve{' '}
+              <span style={{ opacity: 0.5, fontSize: 11 }}>(A)</span>
             </Button>
           )}
           <Button variant="ghost" onClick={handleSave} loading={saving} className="w-full justify-center">

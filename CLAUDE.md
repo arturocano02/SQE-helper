@@ -21,7 +21,7 @@ An AI-powered adaptive study platform for UK law students preparing for the **SQ
 |---|---|---|
 | Framework | Next.js 15, App Router, TypeScript | `src/` directory structure |
 | Database + Auth | Supabase (Postgres + Auth) | Google OAuth only |
-| AI | Anthropic Claude API (`claude-sonnet-4-20250514`) | Centralised question generation — admin only |
+| AI | Anthropic Claude API (`claude-sonnet-4-6`) | Chunk extraction + question generation — admin only |
 | Styling | Tailwind CSS (custom design tokens) | Dark-mode only. No component library. |
 | Fonts | `next/font/google` | Cormorant Garamond (serif, headings) + DM Sans (sans, body) |
 | File parsing | `mammoth` (.docx), `pdf-parse` (.pdf) | Server-side only |
@@ -109,13 +109,20 @@ Users can optionally upload their own revision notes during onboarding (Step 3) 
 **`profiles`** — one row per auth user
 - `is_admin` bool — admins get full dashboard access
 
-**`source_materials`** *(Phase 1b)*
-- `id`, `file_name`, `file_type`, `raw_text` (TEXT — full extracted text), `status` (processing/done/failed), `questions_generated` (int), `uploaded_by` (FK → profiles), `created_at`
+**`source_materials`**
+- `id`, `file_name`, `file_type`, `raw_text` (TEXT — full extracted text), `status` (processing/done/failed), `chunk_status` (pending/extracting/extracted/failed), `chunks_extracted` (int), `uploaded_by` (FK → profiles), `created_at`
+- Upload route saves file + extracts text only. No question generation during upload.
+
+**`knowledge_chunks`** — atomic legal rules extracted from source materials
+- `topic_id`, `subtopic_id`, `source_material_id`, `rule_text`, `context_text`, `source_section` (breadcrumb), `key_terms` (JSONB), `rule_type`, `is_approved`, `sort_order`
+- Two extraction modes: `notes` (revision notes, section-by-section) or `questions` (sample papers, rule-per-MCQ)
+- Questions are generated FROM approved chunks. Every question has `knowledge_chunk_id` FK.
+- `source_section` is the citation breadcrumb shown to users after answering a question.
 
 **`questions`** — shared bank, admin-curated
 - Options stored as JSONB: `[{label:'A',text:'...'}, ...]` — always exactly 5 for MCQ
 - `status`: draft → approved (users see) → archived
-- `source_file` references `source_materials.file_name` (loose reference, not FK)
+- `knowledge_chunk_id` FK → links every question to its source chunk (required for citation)
 
 **`sessions`** — per-user study session
 - `question_ids[]` pre-computed at creation — SRS ordered: due → unseen → not-due
@@ -298,7 +305,7 @@ ANTHROPIC_API_KEY=
 | DB schema + RLS + seed topics | ✅ | |
 | Clean production build | ✅ | |
 
-### ✅ Phase 1b — Complete (this session)
+### ✅ Phase 1b — Complete
 
 | Feature | Status |
 |---|---|
@@ -310,27 +317,52 @@ ANTHROPIC_API_KEY=
 | Onboarding Step 3 re-framed (optional/personal, privacy explained) | ✅ |
 | CLAUDE.md created | ✅ |
 
-### ⏳ Phase 2 — Not started
+### ✅ Phase 2 — Complete
 
-| Feature | Status |
-|---|---|
-| Exam Simulation mode | ⏳ |
-| Spaced repetition home surfacing | ⏳ |
-| Full progress analytics | ⏳ |
-| Subtopic drill | ⏳ |
-| Study streaks | ⏳ |
+| Feature | Status | Notes |
+|---|---|---|
+| Exam Simulation mode | ✅ | `/study/simulate` + `/study/simulate/[sessionId]` — cross-topic, elapsed timer, SRS-ordered |
+| Spaced repetition home surfacing | ✅ | "Due for review" section on home, due count badges on all topic cards |
+| Study streaks | ✅ | 🔥 streak counter on home (shown when ≥ 2 days) |
+
+### ✅ Phase 3 — Knowledge Graph Architecture (this session)
+
+| Feature | Status | Notes |
+|---|---|---|
+| `knowledge_chunks` DB table + migration | ✅ | Atomic legal rules extracted per source section |
+| `chunk-extractor.ts` — notes mode | ✅ | docx → mammoth HTML → section tree → Claude extracts rules |
+| `chunk-extractor.ts` — questions mode | ✅ | PDF raw text → question batches → Claude extracts rule being tested |
+| Admin chunk extraction API (SSE streaming) | ✅ | `/api/admin/chunks/extract` — mode-aware, auto-detects topic per section |
+| Admin Knowledge Graph page | ✅ | `/admin/content/chunks` — tree view, edit modal, bulk approve, search |
+| Upload route — chunk-first only | ✅ | No question generation during upload. File save + text extract only. |
+| Upload page — 3-step UI | ✅ | Upload → Extract Chunks → Generate Questions (from Knowledge Graph) |
+| Question citation in explanation panel | ✅ | After answering, shows Source Rule card with `rule_text` + `source_section` breadcrumb + key terms |
+| `knowledge_chunk_id` FK on `questions` | ✅ | Every question linked to its source chunk |
+| `user_chunk_mastery` table | ✅ | Per-user mastery tracking at chunk level |
+| Admin dashboard chunk stats | ✅ | Total/approved chunk counts + Knowledge Graph link |
 
 ---
 
 ## Key Architectural Decisions
 
 1. **Centralised question bank, not per-user generation.** Admin pays Claude API cost once. All users share approved questions. Personal notes are imported as history signals only.
-2. **No client-side mutations.** All writes via Next.js API routes. Service role key server-only.
-3. **Pre-computed session question lists.** `question_ids[]` set at creation. Pause/resume = track `current_question_index`.
-4. **Synchronous mastery recalculation.** Updated in the same API call as recording an answer. No queues in Phase 1.
-5. **Draft → Approved workflow.** AI generates drafts. Admin approves. Users see only approved questions.
-6. **SM-2 SRS is per (user, question).** Shared questions, individual progression.
+2. **Chunk-first pipeline.** Upload → extract knowledge chunks → admin reviews → generate questions from chunks. No question generation during upload. This ensures every question is traceable to a verified source rule.
+3. **Two extraction modes.** Notes mode: section-by-section rule extraction from revision notes. Questions mode: rule-per-MCQ extraction from sample papers (extracts the rule being tested, not the question itself).
+4. **No client-side mutations.** All writes via Next.js API routes. Service role key server-only.
+5. **Pre-computed session question lists.** `question_ids[]` set at creation. Pause/resume = track `current_question_index`.
+6. **Synchronous mastery recalculation.** Updated in the same API call as recording an answer. No queues.
+7. **Draft → Approved workflow.** AI generates drafts. Admin approves. Users see only approved questions.
+8. **SM-2 SRS is per (user, question).** Shared questions, individual progression.
+9. **Every question cites its source chunk.** `knowledge_chunk_id` FK ensures traceability. After answering, users see the exact legal rule the question tested + the section it came from.
 
 ---
 
-*Last updated: 2026-06-08 — Phase 1b*
+### Known Gaps Before Launch
+- [ ] Rate limiting on API routes
+- [ ] `simulate` mode routes are stubs only
+- [ ] No email notification system
+- [ ] Old questions (generated before chunk-first architecture) have no `knowledge_chunk_id` — should be deleted and re-generated from chunks
+
+---
+
+*Last updated: 2026-06-10 — Phase 3 (Knowledge Graph architecture)*

@@ -9,7 +9,6 @@ export const dynamic = 'force-dynamic'
 export default async function AdminDashboardPage() {
   const admin = createAdminClient()
 
-  // Fetch analytics data in parallel
   const [
     { count: totalUsers },
     { count: totalQuestions },
@@ -35,7 +34,12 @@ export default async function AdminDashboardPage() {
       .limit(100),
   ])
 
-  // Questions per topic
+  const [{ count: totalChunks }, { count: approvedChunks }, { count: pendingFeedback }] = await Promise.all([
+    admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }),
+    admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }).eq('is_approved', true),
+    admin.from('feedback').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+  ])
+
   const { data: qPerTopic } = await admin
     .from('questions')
     .select('topic_id, status')
@@ -46,29 +50,96 @@ export default async function AdminDashboardPage() {
     if (q.topic_id) topicQMap.set(q.topic_id, (topicQMap.get(q.topic_id) ?? 0) + 1)
   })
 
-  // Correct rate from recent activity
   const recent = (recentActivity ?? []) as Array<{ was_correct: boolean }>
   const recentCorrect = recent.filter(r => r.was_correct).length
   const recentRate = recent.length > 0 ? Math.round((recentCorrect / recent.length) * 100) : null
 
   return (
-    <main className="min-h-screen bg-bg">
+    <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
       <div className="max-w-6xl mx-auto px-6 py-6 flex items-center justify-between">
         <div>
-          <h1 className="font-serif text-2xl text-primary">Dashboard</h1>
-          <p className="text-secondary text-sm">Content management &amp; analytics</p>
+          <h1 className="font-serif text-2xl" style={{ color: 'var(--text-primary)' }}>Dashboard</h1>
+          <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Content management &amp; analytics
+          </p>
         </div>
-        <Link href="/admin/content/upload" className="bg-accent text-bg font-medium px-4 py-2 rounded-lg text-sm hover:opacity-90 transition">
+        <Link
+          href="/admin/content/upload"
+          style={{
+            background: 'var(--amber)',
+            color: '#0A0A08',
+            fontFamily: 'var(--font-dm-sans)',
+            fontWeight: 500,
+            fontSize: 13,
+            padding: '8px 16px',
+            borderRadius: 8,
+            transition: 'all 150ms ease',
+          }}
+          className="hover:brightness-110 active:scale-[0.98]"
+        >
           + Upload Source Material
         </Link>
+        <div className="flex items-center gap-3">
+          {(pendingFeedback ?? 0) > 0 && (
+            <Link
+              href="/admin/feedback"
+              style={{
+                background: 'rgba(248,113,113,0.12)',
+                color: 'var(--status-error)',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 500,
+                fontSize: 13,
+                padding: '8px 16px',
+                borderRadius: 8,
+                border: '1px solid rgba(248,113,113,0.30)',
+                transition: 'all 150ms ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+              className="hover:brightness-110"
+            >
+              <span style={{
+                background: 'var(--status-error)',
+                color: '#0A0A08',
+                borderRadius: '50%',
+                width: 18,
+                height: 18,
+                fontSize: 11,
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>{pendingFeedback}</span>
+              Feedback
+            </Link>
+          )}
+          <Link
+            href="/admin/content/chunks"
+            style={{
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              fontFamily: 'var(--font-dm-sans)',
+              fontWeight: 500,
+              fontSize: 13,
+              padding: '8px 16px',
+              borderRadius: 8,
+              border: '1px solid var(--surface-border)',
+              transition: 'all 150ms ease',
+            }}
+            className="hover:brightness-110"
+          >
+            Knowledge Graph →
+          </Link>
+        </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-10 space-y-12">
+      <div className="max-w-6xl mx-auto px-6 pb-16 space-y-12">
 
-        {/* ── Analytics ── */}
+        {/* Overview stats */}
         <section>
-          <h2 className="font-serif text-2xl text-primary mb-5">Overview</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <h2 className="font-serif text-xl mb-4" style={{ color: 'var(--text-primary)' }}>Overview</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <StatCard label="Total Users" value={totalUsers ?? 0} />
             <StatCard label="Sessions Completed" value={totalSessions ?? 0} />
             <StatCard label="Answers Given" value={totalAnswers ?? 0} />
@@ -76,45 +147,127 @@ export default async function AdminDashboardPage() {
               label="Recent Correct Rate"
               value={recentRate !== null ? `${recentRate}%` : '—'}
               sub={`last ${recent.length} answers`}
+              accent
             />
           </div>
         </section>
 
-        {/* Question bank stats */}
+        {/* Knowledge graph */}
         <section>
-          <h2 className="font-serif text-2xl text-primary mb-5">Question Bank</h2>
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-serif text-xl" style={{ color: 'var(--text-primary)' }}>Knowledge Graph</h2>
+            <Link
+              href="/admin/content/chunks"
+              className="font-sans text-sm"
+              style={{ color: 'var(--amber-text)' }}
+            >
+              View all chunks →
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <StatCard label="Knowledge Chunks" value={totalChunks ?? 0} />
+            <StatCard label="Approved Chunks" value={approvedChunks ?? 0} accent />
+          </div>
+          {(approvedChunks ?? 0) > 0 && (
+            <Link
+              href="/admin/content/generate"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(200,146,42,0.08)',
+                color: 'var(--amber-text)',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 500,
+                fontSize: 13,
+                padding: '9px 16px',
+                borderRadius: 8,
+                border: '1px solid rgba(200,146,42,0.25)',
+              }}
+              className="hover:brightness-110 transition"
+            >
+              ✦ Generate questions from chunks →
+            </Link>
+          )}
+        </section>
+
+        {/* Question bank */}
+        <section>
+          <h2 className="font-serif text-xl mb-4" style={{ color: 'var(--text-primary)' }}>Question Bank</h2>
+          <div className="grid grid-cols-3 gap-3 mb-5">
             <StatCard label="Total Questions" value={totalQuestions ?? 0} />
             <StatCard label="Approved" value={approvedQuestions ?? 0} accent />
             <StatCard label="Awaiting Review" value={draftQuestions ?? 0} warning={!!draftQuestions} />
           </div>
 
-          {/* Questions per topic */}
-          <div className="bg-surface border border-border rounded-lg overflow-hidden">
-            <div className="p-4 border-b border-border">
-              <p className="text-secondary text-sm">Approved questions by topic</p>
+          {/* Per-topic bars */}
+          <div
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 12,
+              overflow: 'hidden',
+            }}
+            className="card-glow"
+          >
+            <div
+              className="p-4"
+              style={{ borderBottom: '1px solid var(--surface-border)' }}
+            >
+              <p
+                className="font-sans text-sm"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Approved questions by topic
+              </p>
             </div>
-            <div className="divide-y divide-border/50">
+            <div>
               {((topics ?? []) as Array<{ id: string; name: string; paper: string }>).map(t => {
                 const count = topicQMap.get(t.id) ?? 0
                 const maxCount = Math.max(...Array.from(topicQMap.values()), 1)
                 const pct = Math.round((count / maxCount) * 100)
                 return (
-                  <div key={t.id} className="px-4 py-3 flex items-center gap-4">
-                    <span className={`text-xs border rounded-lg px-1.5 py-0.5 shrink-0 ${
-                      t.paper === 'FLK1' ? 'border-accent/50 text-accent' : 'border-secondary/50 text-secondary'
-                    }`}>{t.paper}</span>
-                    <span className="text-sm text-primary w-52 shrink-0 truncate">{t.name}</span>
-                    <div className="flex-1 h-1.5 bg-surface2 rounded-full overflow-hidden">
+                  <div
+                    key={t.id}
+                    className="px-4 py-3 flex items-center gap-4"
+                    style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}
+                  >
+                    <span
+                      className="text-[10px] font-sans rounded px-1.5 py-0.5 shrink-0"
+                      style={{
+                        border: t.paper === 'FLK1'
+                          ? '1px solid rgba(200,146,42,0.4)'
+                          : '1px solid rgba(154,149,144,0.4)',
+                        color: t.paper === 'FLK1' ? 'var(--amber-text)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {t.paper}
+                    </span>
+                    <span
+                      className="font-sans text-sm shrink-0 truncate"
+                      style={{ width: 200, color: 'var(--text-primary)' }}
+                    >
+                      {t.name}
+                    </span>
+                    <div
+                      className="flex-1 rounded-full overflow-hidden"
+                      style={{ height: 5, background: 'var(--surface-3)' }}
+                    >
                       <div
-                        className={`h-full rounded-full ${count > 0 ? 'bg-accent' : 'bg-muted'}`}
+                        className="h-full rounded-full progress-fill"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <span className="text-sm tabular-nums text-secondary w-8 text-right">{count}</span>
+                    <span
+                      className="font-mono text-sm tabular-nums"
+                      style={{ color: 'var(--text-secondary)', width: 28, textAlign: 'right', flexShrink: 0 }}
+                    >
+                      {count}
+                    </span>
                     <Link
-                      href={`/admin/content/questions`}
-                      className="text-xs text-muted hover:text-secondary transition"
+                      href="/admin/content/questions"
+                      className="font-sans text-xs transition"
+                      style={{ color: 'var(--text-muted)', flexShrink: 0 }}
                     >
                       view →
                     </Link>
@@ -125,16 +278,32 @@ export default async function AdminDashboardPage() {
           </div>
 
           {(draftQuestions ?? 0) > 0 && (
-            <div className="mt-4 p-4 bg-warning/5 border border-warning/20 rounded-xl">
+            <div
+              className="mt-4 p-4"
+              style={{
+                background: 'rgba(200,146,42,0.06)',
+                border: '1px solid rgba(200,146,42,0.20)',
+                borderRadius: 12,
+              }}
+            >
               <div className="flex items-center justify-between gap-4 flex-wrap">
-                <p className="text-warning text-sm font-medium">
+                <p
+                  className="font-sans text-sm font-medium"
+                  style={{ color: 'var(--amber-text)' }}
+                >
                   {draftQuestions} draft question{draftQuestions !== 1 ? 's' : ''} awaiting review
                 </p>
                 <div className="flex items-center gap-2">
                   <BulkApproveButton count={draftQuestions ?? 0} />
                   <Link
                     href="/admin/content/questions"
-                    className="border border-border text-secondary px-3 py-1.5 rounded-lg text-xs hover:bg-surface2 transition"
+                    className="font-sans text-xs transition"
+                    style={{
+                      border: '1px solid var(--surface-border)',
+                      color: 'var(--text-secondary)',
+                      padding: '6px 12px',
+                      borderRadius: 6,
+                    }}
                   >
                     Review individually →
                   </Link>
@@ -144,36 +313,58 @@ export default async function AdminDashboardPage() {
           )}
         </section>
 
-        {/* ── Source Materials ── */}
+        {/* Source materials */}
         <section>
-          <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="font-serif text-2xl text-primary">Source Materials</h2>
-              <p className="text-secondary text-sm mt-0.5">
+              <h2 className="font-serif text-xl" style={{ color: 'var(--text-primary)' }}>
+                Source Materials
+              </h2>
+              <p className="font-sans text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                 {(sourceMaterials ?? []).length} file{sourceMaterials?.length !== 1 ? 's' : ''} uploaded —
                 questions are generated once and shared across all users
               </p>
             </div>
             <Link
               href="/admin/content/upload"
-              className="bg-accent text-bg font-medium px-4 py-2 rounded-lg text-sm hover:opacity-90 transition"
+              style={{
+                background: 'var(--amber)',
+                color: '#0A0A08',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 500,
+                fontSize: 13,
+                padding: '8px 16px',
+                borderRadius: 8,
+                transition: 'all 150ms ease',
+              }}
+              className="hover:brightness-110 active:scale-[0.98]"
             >
               + Upload New
             </Link>
           </div>
 
           {sourceMaterials && sourceMaterials.length > 0 ? (
-            <div className="bg-surface border border-border rounded-lg overflow-hidden">
+            <div
+              style={{
+                background: 'var(--surface-1)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 12,
+                overflow: 'hidden',
+              }}
+              className="card-glow"
+            >
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-border">
-                    <th className="p-4 text-left text-secondary font-normal">File</th>
-                    <th className="p-4 text-left text-secondary font-normal">Type</th>
-                    <th className="p-4 text-left text-secondary font-normal">Status</th>
-                    <th className="p-4 text-left text-secondary font-normal">Progress</th>
-                    <th className="p-4 text-left text-secondary font-normal">Questions</th>
-                    <th className="p-4 text-left text-secondary font-normal">Uploaded</th>
-                    <th className="p-4 text-left text-secondary font-normal w-10"></th>
+                  <tr style={{ borderBottom: '1px solid var(--surface-border)' }}>
+                    {['File', 'Type', 'Status', 'Progress', 'Questions', 'Uploaded', ''].map(h => (
+                      <th
+                        key={h}
+                        className="p-4 text-left font-normal font-sans text-xs uppercase tracking-wider"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        {h}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -184,14 +375,33 @@ export default async function AdminDashboardPage() {
               </table>
             </div>
           ) : (
-            <div className="bg-surface border border-border border-dashed rounded-xl p-12 text-center">
-              <p className="text-secondary mb-2">No source material uploaded yet</p>
-              <p className="text-muted text-sm mb-6">
+            <div
+              style={{
+                background: 'var(--surface-1)',
+                border: '1px dashed rgba(255,255,255,0.10)',
+                borderRadius: 14,
+                padding: '56px 24px',
+                textAlign: 'center',
+              }}
+            >
+              <p className="font-serif text-2xl mb-2" style={{ color: 'var(--text-muted)' }}>
+                No source materials yet
+              </p>
+              <p className="font-sans text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>
                 Upload your FLK1 and FLK2 notes to generate the question bank
               </p>
               <Link
                 href="/admin/content/upload"
-                className="bg-accent text-bg font-medium px-5 py-2.5 rounded-lg hover:opacity-90 transition"
+                style={{
+                  background: 'var(--amber)',
+                  color: '#0A0A08',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontWeight: 500,
+                  fontSize: 14,
+                  padding: '11px 24px',
+                  borderRadius: 8,
+                  display: 'inline-block',
+                }}
               >
                 Upload First File →
               </Link>
@@ -217,13 +427,42 @@ function StatCard({
   accent?: boolean
   warning?: boolean
 }) {
+  const valueColor = accent
+    ? 'var(--amber-text)'
+    : warning
+    ? 'var(--status-warning)'
+    : 'var(--text-primary)'
+
   return (
-    <div className="bg-surface border border-border rounded-xl p-5">
-      <p className="text-secondary text-xs mb-1 uppercase tracking-wide">{label}</p>
-      <p className={`font-serif text-3xl ${accent ? 'text-accent' : warning ? 'text-warning' : 'text-primary'}`}>
+    <div
+      style={{
+        background: 'var(--surface-1)',
+        border: '1px solid var(--surface-border)',
+        borderRadius: 12,
+        padding: '18px 20px',
+      }}
+      className="card-glow"
+    >
+      <p
+        className="font-sans text-[10px] uppercase tracking-wider mb-1.5"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        {label}
+      </p>
+      <p
+        className="font-serif text-3xl tabular-nums"
+        style={{ color: valueColor }}
+      >
         {typeof value === 'number' ? value.toLocaleString() : value}
       </p>
-      {sub && <p className="text-muted text-xs mt-1">{sub}</p>}
+      {sub && (
+        <p
+          className="font-sans text-xs mt-1"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {sub}
+        </p>
+      )}
     </div>
   )
 }

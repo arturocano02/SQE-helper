@@ -8,74 +8,115 @@ interface OptionButtonProps {
   disabled?: boolean
 }
 
-const stateConfig: Record<OptionButtonProps['state'], {
-  border: string; bg: string; labelBg: string; labelText: string; textColor: string; icon?: string
-}> = {
+type StateStyle = {
+  border: string
+  bg: string
+  labelBg: string
+  labelText: string
+  textColor: string
+  icon?: string
+}
+
+const stateStyles: Record<OptionButtonProps['state'], StateStyle> = {
   idle: {
-    border: 'border-border hover:border-secondary/60',
-    bg: 'bg-surface hover:bg-surface2',
-    labelBg: 'bg-surface2 group-hover:bg-border',
-    labelText: 'text-secondary',
-    textColor: 'text-primary',
+    border: '1px solid var(--surface-border)',
+    bg: 'var(--surface-1)',
+    labelBg: 'var(--surface-3)',
+    labelText: 'var(--text-secondary)',
+    textColor: 'var(--text-primary)',
   },
   selected: {
-    border: 'border-accent',
-    bg: 'bg-accent-dim',
-    labelBg: 'bg-accent',
-    labelText: 'text-bg',
-    textColor: 'text-accent',
+    border: '1px solid rgba(200,146,42,0.5)',
+    bg: 'var(--amber-soft)',
+    labelBg: 'var(--amber)',
+    labelText: '#0A0A08',
+    textColor: 'var(--amber-text)',
   },
   correct: {
-    border: 'border-success',
-    bg: 'bg-success/10',
-    labelBg: 'bg-success',
-    labelText: 'text-bg',
-    textColor: 'text-success',
+    border: '1px solid var(--status-correct)',
+    bg: 'rgba(76,175,130,0.10)',
+    labelBg: 'var(--status-correct)',
+    labelText: '#0A0A08',
+    textColor: '#6ECFA3',
     icon: '✓',
   },
   incorrect: {
-    border: 'border-error',
-    bg: 'bg-error/10',
-    labelBg: 'bg-error',
-    labelText: 'text-bg',
-    textColor: 'text-error',
+    border: '1px solid var(--status-wrong)',
+    bg: 'rgba(224,90,90,0.10)',
+    labelBg: 'var(--status-wrong)',
+    labelText: '#0A0A08',
+    textColor: '#E87878',
     icon: '✗',
   },
   'reveal-correct': {
-    border: 'border-success/50',
-    bg: 'bg-success/5',
-    labelBg: 'bg-success/30',
-    labelText: 'text-success',
-    textColor: 'text-success/80',
+    border: '1px solid rgba(76,175,130,0.4)',
+    bg: 'rgba(76,175,130,0.06)',
+    labelBg: 'rgba(76,175,130,0.25)',
+    labelText: 'var(--status-correct)',
+    textColor: '#6ECFA3',
     icon: '✓',
   },
 }
 
 export default function OptionButton({ label, text, state, onClick, disabled }: OptionButtonProps) {
-  const cfg = stateConfig[state]
+  const s = stateStyles[state]
   const isAnswered = state !== 'idle' && state !== 'selected'
+  const isIdle = state === 'idle'
 
   return (
     <button
       onClick={onClick}
       disabled={disabled}
+      style={{
+        border: s.border,
+        background: s.bg,
+        borderRadius: 10,
+        transition: 'all 150ms ease',
+        display: 'flex',
+        alignItems: 'stretch',
+        width: '100%',
+        textAlign: 'left',
+        minHeight: 52,
+        cursor: disabled ? 'default' : 'pointer',
+      }}
       className={[
-        'group w-full text-left flex items-start gap-0 rounded-xl border-2 transition-all duration-150',
-        'disabled:cursor-default focus:outline-none focus:ring-2 focus:ring-accent/50 focus:ring-offset-2 focus:ring-offset-bg',
-        cfg.border, cfg.bg,
-        !disabled && state === 'idle' ? 'cursor-pointer' : '',
+        'group',
+        'focus:outline-none',
+        isIdle && !disabled ? 'hover:border-[rgba(200,146,42,0.3)] hover:bg-[var(--surface-2)]' : '',
       ].join(' ')}
     >
-      {/* Letter label */}
-      <div className={[
-        'flex-shrink-0 w-11 self-stretch flex items-center justify-center rounded-l-xl transition-all duration-150 text-sm font-semibold',
-        cfg.labelBg, cfg.labelText,
-      ].join(' ')}>
-        {isAnswered && cfg.icon ? cfg.icon : label}
+      {/* Letter badge */}
+      <div
+        style={{
+          flexShrink: 0,
+          width: 44,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: '10px 0 0 10px',
+          background: s.labelBg,
+          color: s.labelText,
+          fontFamily: 'var(--font-dm-mono)',
+          fontSize: 13,
+          fontWeight: 600,
+          transition: 'all 150ms ease',
+        }}
+      >
+        {isAnswered && s.icon ? s.icon : label}
       </div>
 
       {/* Text */}
-      <div className={`flex-1 px-4 py-3.5 text-sm leading-relaxed ${cfg.textColor}`}>
+      <div
+        style={{
+          flex: 1,
+          padding: '14px 16px',
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: s.textColor,
+          fontFamily: 'var(--font-dm-sans)',
+          transition: 'color 150ms ease',
+        }}
+      >
         {text}
       </div>
     </button>

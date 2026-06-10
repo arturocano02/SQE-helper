@@ -84,22 +84,31 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
     setEditingId(null)
   }
 
-  // Keyboard shortcut — A to approve, Escape to close edit panel
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (editingQuestion && e.key === 'a' && !e.metaKey && !e.ctrlKey) {
-        // Approve from panel
-      }
       if (e.key === 'Escape') setEditingId(null)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [editingQuestion])
 
-  const statusColors: Record<QuestionStatus, string> = {
-    draft:    'text-warning',
-    approved: 'text-success',
-    archived: 'text-muted',
+  const filterChipStyle = (active: boolean): React.CSSProperties => ({
+    padding: '4px 12px',
+    borderRadius: 8,
+    fontSize: 12,
+    fontFamily: 'var(--font-dm-sans)',
+    border: active ? '1px solid rgba(200,146,42,0.5)' : '1px solid var(--surface-border)',
+    background: active ? 'var(--amber-soft)' : 'transparent',
+    color: active ? 'var(--amber-text)' : 'var(--text-secondary)',
+    cursor: 'pointer',
+    textTransform: 'capitalize' as const,
+    transition: 'all 150ms ease',
+  })
+
+  const statusTextColor: Record<QuestionStatus, string> = {
+    draft: 'var(--status-warning)',
+    approved: 'var(--status-correct)',
+    archived: 'var(--text-muted)',
   }
 
   return (
@@ -108,24 +117,20 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
       <div className="flex-1 min-w-0">
         {/* Filters */}
         <div className="flex flex-wrap gap-2 mb-4">
-          {/* Status */}
           {(['all', 'draft', 'approved', 'archived'] as const).map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1 rounded-lg text-xs border transition capitalize ${statusFilter === s ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
+            <button key={s} onClick={() => setStatusFilter(s)} style={filterChipStyle(statusFilter === s)}>
               {s}
             </button>
           ))}
-          <div className="w-px bg-border" />
+          <div style={{ width: 1, background: 'var(--surface-border)', margin: '0 4px' }} />
           {(['all', 'mcq', 'flashcard'] as const).map(t => (
-            <button key={t} onClick={() => setTypeFilter(t)}
-              className={`px-3 py-1 rounded-lg text-xs border transition capitalize ${typeFilter === t ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
+            <button key={t} onClick={() => setTypeFilter(t)} style={filterChipStyle(typeFilter === t)}>
               {t === 'all' ? 'All types' : t}
             </button>
           ))}
-          <div className="w-px bg-border" />
+          <div style={{ width: 1, background: 'var(--surface-border)', margin: '0 4px' }} />
           {(['all', 'easy', 'medium', 'hard'] as const).map(d => (
-            <button key={d} onClick={() => setDiffFilter(d)}
-              className={`px-3 py-1 rounded-lg text-xs border transition capitalize ${diffFilter === d ? 'bg-accent text-bg border-accent' : 'border-border text-secondary hover:bg-surface2'}`}>
+            <button key={d} onClick={() => setDiffFilter(d)} style={filterChipStyle(diffFilter === d)}>
               {d === 'all' ? 'Any difficulty' : d}
             </button>
           ))}
@@ -135,7 +140,15 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
         <select
           value={topicFilter}
           onChange={e => setTopicFilter(e.target.value)}
-          className="mb-4 bg-surface2 border border-border text-primary px-3 py-1.5 rounded-lg text-sm focus:border-accent focus:outline-none"
+          className="mb-4 text-sm focus:outline-none"
+          style={{
+            background: 'var(--surface-2)',
+            border: '1px solid var(--surface-border)',
+            color: 'var(--text-primary)',
+            padding: '6px 12px',
+            borderRadius: 8,
+            fontFamily: 'var(--font-dm-sans)',
+          }}
         >
           <option value="all">All topics</option>
           {topics.map(t => (
@@ -145,8 +158,16 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
 
         {/* Bulk actions */}
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 mb-3 p-3 bg-surface border border-border rounded-xl">
-            <span className="text-sm text-primary font-medium">{selected.size} selected</span>
+          <div
+            className="flex items-center gap-3 mb-3 p-3 rounded-xl"
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+            }}
+          >
+            <span className="font-sans text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              {selected.size} selected
+            </span>
             <div className="flex items-center gap-2 ml-auto">
               <Button size="sm" onClick={bulkApprove} loading={bulkLoading}>
                 Approve selected
@@ -162,49 +183,92 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
         )}
 
         {/* Table */}
-        <div className="bg-surface border border-border rounded-lg overflow-hidden">
+        <div
+          style={{
+            background: 'var(--surface-1)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 12,
+            overflow: 'hidden',
+          }}
+          className="card-glow"
+        >
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border">
+              <tr style={{ borderBottom: '1px solid var(--surface-border)' }}>
                 <th className="p-3 text-left w-10">
                   <input
                     type="checkbox"
                     checked={selected.size === filtered.length && filtered.length > 0}
                     onChange={toggleAll}
-                    className="accent-accent"
+                    style={{ accentColor: 'var(--amber)' }}
                   />
                 </th>
-                <th className="p-3 text-left text-secondary font-normal">Topic</th>
-                <th className="p-3 text-left text-secondary font-normal">Type</th>
-                <th className="p-3 text-left text-secondary font-normal">Difficulty</th>
-                <th className="p-3 text-left text-secondary font-normal">Prompt</th>
-                <th className="p-3 text-left text-secondary font-normal">Status</th>
+                {['Topic', 'Type', 'Difficulty', 'Prompt', 'Status'].map(h => (
+                  <th
+                    key={h}
+                    className="p-3 text-left font-normal font-sans text-xs"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {filtered.map(q => {
                 const topic = q.topic_id ? topicMap.get(q.topic_id) : null
+                const isEditing = editingId === q.id
                 return (
                   <tr
                     key={q.id}
                     onClick={() => setEditingId(q.id)}
-                    className={`border-b border-border/50 cursor-pointer hover:bg-surface2 transition ${editingId === q.id ? 'bg-surface2' : ''}`}
+                    style={{
+                      borderBottom: '1px solid rgba(255,255,255,0.04)',
+                      background: isEditing ? 'var(--surface-2)' : 'transparent',
+                      cursor: 'pointer',
+                      transition: 'background 120ms ease',
+                    }}
+                    className="hover:bg-[var(--surface-2)]"
                   >
                     <td className="p-3" onClick={e => { e.stopPropagation(); toggleSelect(q.id) }}>
-                      <input type="checkbox" checked={selected.has(q.id)} onChange={() => toggleSelect(q.id)} className="accent-accent" />
+                      <input
+                        type="checkbox"
+                        checked={selected.has(q.id)}
+                        onChange={() => toggleSelect(q.id)}
+                        style={{ accentColor: 'var(--amber)' }}
+                      />
                     </td>
-                    <td className="p-3 text-secondary text-xs">{topic?.name ?? '—'}</td>
+                    <td className="p-3 font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {topic?.name ?? '—'}
+                    </td>
                     <td className="p-3"><Badge>{q.type}</Badge></td>
-                    <td className="p-3">{q.difficulty ? <Badge variant={q.difficulty}>{q.difficulty}</Badge> : '—'}</td>
-                    <td className="p-3 text-primary max-w-xs truncate">{q.prompt.slice(0, 60)}…</td>
-                    <td className={`p-3 capitalize text-xs ${statusColors[q.status]}`}>{q.status}</td>
+                    <td className="p-3">
+                      {q.difficulty ? <Badge variant={q.difficulty}>{q.difficulty}</Badge> : '—'}
+                    </td>
+                    <td
+                      className="p-3 font-sans max-w-xs truncate"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      {q.prompt.slice(0, 60)}…
+                    </td>
+                    <td
+                      className="p-3 font-sans capitalize text-xs"
+                      style={{ color: statusTextColor[q.status] }}
+                    >
+                      {q.status}
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
           {filtered.length === 0 && (
-            <p className="text-secondary text-sm text-center py-12">No questions match your filters.</p>
+            <p
+              className="font-sans text-sm text-center py-12"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              No questions match your filters.
+            </p>
           )}
         </div>
       </div>

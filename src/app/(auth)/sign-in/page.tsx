@@ -49,9 +49,7 @@ export default function SignInPage() {
       const { error } = await supabase.auth.signUp({
         email,
         password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
+        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       })
       if (error) {
         setError(error.message)
@@ -63,7 +61,6 @@ export default function SignInPage() {
       if (error) {
         setError(error.message)
       } else {
-        // Session is already set — check if admin and redirect accordingly
         const { data: profile } = await supabase
           .from('profiles')
           .select('is_admin, onboarding_complete')
@@ -83,23 +80,77 @@ export default function SignInPage() {
     setLoading(false)
   }
 
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    background: 'var(--surface-3)',
+    border: '1px solid var(--surface-border)',
+    borderRadius: 8,
+    padding: '10px 14px',
+    color: 'var(--text-primary)',
+    fontFamily: 'var(--font-dm-sans)',
+    fontSize: 14,
+    outline: 'none',
+    transition: 'all 150ms ease',
+  }
+
   return (
-    <main className="min-h-screen bg-bg flex flex-col items-center justify-center px-4">
-      <div className="w-full max-w-sm text-center">
+    <main
+      className="min-h-screen flex flex-col items-center justify-center px-5"
+      style={{ background: 'var(--surface-base)' }}
+    >
+      <div className="w-full max-w-sm">
 
         {/* Brand */}
-        <div className="mb-10">
-          <div className="flex items-center justify-center gap-2 mb-3">
-            <span className="w-8 h-8 rounded-lg bg-accent/20 border border-accent/30 flex items-center justify-center">
-              <span className="font-serif text-accent text-sm font-semibold">S</span>
-            </span>
-            <h1 className="font-serif text-3xl text-primary">SQE1</h1>
+        <div className="mb-10 text-center">
+          <div className="flex items-center justify-center gap-2.5 mb-3">
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: 'var(--amber-soft)',
+                border: '1px solid rgba(200,146,42,0.35)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <span
+                className="font-serif text-sm font-semibold"
+                style={{ color: 'var(--amber)' }}
+              >
+                S
+              </span>
+            </div>
+            <h1
+              className="font-serif text-3xl"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              SQE1
+            </h1>
           </div>
-          <p className="text-secondary text-sm">Adaptive study for the Solicitors Qualifying Examination</p>
+          <p
+            className="font-sans text-sm"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Adaptive study for the Solicitors Qualifying Examination
+          </p>
         </div>
 
-        <div className="bg-surface border border-border rounded-xl p-8">
-          <h2 className="font-serif text-2xl text-primary mb-6">
+        {/* Card */}
+        <div
+          style={{
+            background: 'var(--surface-1)',
+            border: '1px solid var(--surface-border)',
+            borderRadius: 14,
+            padding: '32px 28px',
+          }}
+          className="card-glow"
+        >
+          <h2
+            className="font-serif text-2xl mb-7"
+            style={{ color: 'var(--text-primary)' }}
+          >
             {mode === 'signin' ? 'Welcome back' : 'Create account'}
           </h2>
 
@@ -107,34 +158,75 @@ export default function SignInPage() {
           <button
             onClick={handleGoogleSignIn}
             disabled={googleLoading || loading}
-            className="w-full flex items-center justify-center gap-3 bg-surface2 border border-border text-primary px-4 py-3 rounded-lg hover:bg-border transition disabled:opacity-50 disabled:cursor-not-allowed mb-4"
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              background: 'var(--surface-3)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 8,
+              padding: '11px 16px',
+              color: 'var(--text-primary)',
+              fontFamily: 'var(--font-dm-sans)',
+              fontSize: 14,
+              cursor: 'pointer',
+              transition: 'all 150ms ease',
+              marginBottom: 20,
+              opacity: googleLoading || loading ? 0.5 : 1,
+            }}
+            className="hover:bg-[var(--surface-2)] hover:border-[rgba(255,255,255,0.12)]"
           >
             {googleLoading ? <LoadingSpinner size="sm" /> : <GoogleIcon />}
-            <span className="text-sm">Continue with Google</span>
+            <span>Continue with Google</span>
           </button>
 
           {/* Divider */}
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex-1 h-px bg-border" />
-            <span className="text-xs text-muted">or</span>
-            <div className="flex-1 h-px bg-border" />
+          <div className="flex items-center gap-3 mb-5">
+            <div style={{ flex: 1, height: 1, background: 'var(--surface-border)' }} />
+            <span
+              className="font-sans text-xs"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              or
+            </span>
+            <div style={{ flex: 1, height: 1, background: 'var(--surface-border)' }} />
           </div>
 
-          {/* Email / password form */}
-          <form onSubmit={handleEmailAuth} className="space-y-3 text-left">
+          {/* Email form */}
+          <form onSubmit={handleEmailAuth} className="space-y-4">
             <div>
-              <label className="block text-xs text-secondary mb-1">Email</label>
+              <label
+                className="block font-sans text-xs mb-1.5"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Email
+              </label>
               <input
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 required
-                className="w-full bg-surface2 border border-border text-primary px-3 py-2.5 rounded-lg text-sm focus:border-accent focus:outline-none"
+                style={inputStyle}
+                onFocus={e => {
+                  (e.target as HTMLInputElement).style.borderColor = 'rgba(200,146,42,0.5)'
+                  ;(e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px var(--amber-glow)'
+                }}
+                onBlur={e => {
+                  (e.target as HTMLInputElement).style.borderColor = 'var(--surface-border)'
+                  ;(e.target as HTMLInputElement).style.boxShadow = 'none'
+                }}
               />
             </div>
             <div>
-              <label className="block text-xs text-secondary mb-1">Password</label>
+              <label
+                className="block font-sans text-xs mb-1.5"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Password
+              </label>
               <input
                 type="password"
                 value={password}
@@ -142,14 +234,40 @@ export default function SignInPage() {
                 placeholder={mode === 'signup' ? 'Min. 6 characters' : '••••••••'}
                 required
                 minLength={6}
-                className="w-full bg-surface2 border border-border text-primary px-3 py-2.5 rounded-lg text-sm focus:border-accent focus:outline-none"
+                style={inputStyle}
+                onFocus={e => {
+                  (e.target as HTMLInputElement).style.borderColor = 'rgba(200,146,42,0.5)'
+                  ;(e.target as HTMLInputElement).style.boxShadow = '0 0 0 3px var(--amber-glow)'
+                }}
+                onBlur={e => {
+                  (e.target as HTMLInputElement).style.borderColor = 'var(--surface-border)'
+                  ;(e.target as HTMLInputElement).style.boxShadow = 'none'
+                }}
               />
             </div>
 
             <button
               type="submit"
               disabled={loading || googleLoading}
-              className="w-full bg-accent text-bg font-medium py-2.5 rounded-lg hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm flex items-center justify-center gap-2"
+              style={{
+                width: '100%',
+                background: 'var(--amber)',
+                color: '#0A0A08',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 500,
+                fontSize: 14,
+                padding: '11px 24px',
+                borderRadius: 8,
+                border: 'none',
+                cursor: loading || googleLoading ? 'not-allowed' : 'pointer',
+                opacity: loading || googleLoading ? 0.5 : 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                transition: 'all 150ms ease',
+              }}
+              className="hover:brightness-110 active:scale-[0.98]"
             >
               {loading && <LoadingSpinner size="sm" />}
               {mode === 'signin' ? 'Sign in' : 'Create account'}
@@ -157,25 +275,56 @@ export default function SignInPage() {
           </form>
 
           {error && (
-            <p className="mt-4 text-sm text-error text-center">{error}</p>
+            <p
+              className="mt-4 font-sans text-sm text-center"
+              style={{ color: 'var(--status-wrong)' }}
+            >
+              {error}
+            </p>
           )}
           {message && (
-            <p className="mt-4 text-sm text-success text-center">{message}</p>
+            <p
+              className="mt-4 font-sans text-sm text-center"
+              style={{ color: 'var(--status-correct)' }}
+            >
+              {message}
+            </p>
           )}
 
-          {/* Toggle mode */}
-          <p className="mt-5 text-xs text-muted text-center">
+          {/* Mode toggle */}
+          <p
+            className="mt-6 font-sans text-xs text-center"
+            style={{ color: 'var(--text-muted)' }}
+          >
             {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
             <button
-              onClick={() => { setMode(m => m === 'signin' ? 'signup' : 'signin'); setError(null); setMessage(null) }}
-              className="text-secondary hover:text-primary transition underline underline-offset-2"
+              onClick={() => {
+                setMode(m => m === 'signin' ? 'signup' : 'signin')
+                setError(null)
+                setMessage(null)
+              }}
+              style={{
+                color: 'var(--text-secondary)',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                textUnderlineOffset: 2,
+                fontFamily: 'var(--font-dm-sans)',
+                fontSize: 12,
+                transition: 'color 150ms ease',
+              }}
+              className="hover:text-[var(--text-primary)]"
             >
               {mode === 'signin' ? 'Sign up' : 'Sign in'}
             </button>
           </p>
         </div>
 
-        <p className="mt-6 text-xs text-muted text-center">
+        <p
+          className="mt-5 font-sans text-xs text-center"
+          style={{ color: 'var(--text-muted)' }}
+        >
           By continuing, you agree to our Terms and Privacy Policy.
         </p>
       </div>

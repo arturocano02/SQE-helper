@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   const admin = createAdminClient()
   const { data: question } = await admin
     .from('questions')
-    .select('correct_answer, explanation, difficulty, topic_id, type')
+    .select('correct_answer, explanation, difficulty, topic_id, type, knowledge_chunk_id')
     .eq('id', question_id)
     .single()
 
@@ -129,9 +129,58 @@ export async function POST(request: Request) {
     await supabase.from('user_topic_mastery').upsert(updates)
   }
 
+  // Update user_chunk_mastery if question is linked to a knowledge chunk
+  let chunkCitation: { rule_text: string; source_section: string; key_terms: string[] } | null = null
+
+  if (question.knowledge_chunk_id) {
+    const chunkId = question.knowledge_chunk_id as string
+
+    // Fetch chunk data for citation in the explanation panel
+    const { data: chunk } = await admin
+      .from('knowledge_chunks')
+      .select('rule_text, source_section, key_terms')
+      .eq('id', chunkId)
+      .single()
+
+    if (chunk) {
+      chunkCitation = {
+        rule_text: chunk.rule_text,
+        source_section: chunk.source_section,
+        key_terms: Array.isArray(chunk.key_terms) ? chunk.key_terms : [],
+      }
+    }
+
+    // Update mastery record
+    const { data: existing } = await supabase
+      .from('user_chunk_mastery')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('chunk_id', chunkId)
+      .maybeSingle()
+
+    const correctCount = (existing?.correct_count ?? 0) + (was_correct ? 1 : 0)
+    const attemptCount = (existing?.attempt_count ?? 0) + 1
+    const rate = correctCount / attemptCount
+
+    let confidence: 'shaky' | 'okay' | 'solid'
+    if (rate >= 0.8 && attemptCount >= 3) confidence = 'solid'
+    else if (rate >= 0.5) confidence = 'okay'
+    else confidence = 'shaky'
+
+    await supabase.from('user_chunk_mastery').upsert({
+      user_id: user.id,
+      chunk_id: chunkId,
+      confidence_level: confidence,
+      correct_count: correctCount,
+      attempt_count: attemptCount,
+      last_tested_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,chunk_id' })
+  }
+
   return NextResponse.json({
     was_correct,
     correct_answer: question.correct_answer,
     explanation: question.explanation ?? '',
+    chunk: chunkCitation,
   })
 }

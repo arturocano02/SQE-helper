@@ -48,9 +48,10 @@ export default function DrillSessionPage() {
 
       const topicMap = new Map(((topicsData ?? []) as Topic[]).map(t => [t.id, t]))
 
-      // Reorder questions to match session order
       const questionMap = new Map((questions ?? []).map((q: Question) => [q.id, q]))
-      const orderedQs = (session.question_ids as string[]).map(id => questionMap.get(id)).filter(Boolean) as Question[]
+      const orderedQs = (session.question_ids as string[])
+        .map(id => questionMap.get(id))
+        .filter(Boolean) as Question[]
 
       setData({ session: session as Session, questions: orderedQs, topics: topicMap })
       setCurrentIndex(session.current_question_index ?? 0)
@@ -79,7 +80,6 @@ export default function DrillSessionPage() {
     if (!data) return
     const nextIndex = currentIndex + 1
     if (nextIndex >= data.questions.length) {
-      // Complete session
       await fetch('/api/sessions/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -100,7 +100,6 @@ export default function DrillSessionPage() {
     router.push('/home')
   }, [sessionId, currentIndex, router])
 
-  // Escape to exit prompt
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setShowExitPrompt(p => !p)
@@ -111,7 +110,10 @@ export default function DrillSessionPage() {
 
   if (loading || !data) {
     return (
-      <div className="min-h-screen bg-bg flex items-center justify-center">
+      <div
+        className="min-h-screen flex items-center justify-center"
+        style={{ background: 'var(--surface-base)' }}
+      >
         <LoadingSpinner size="lg" />
       </div>
     )
@@ -121,7 +123,7 @@ export default function DrillSessionPage() {
   const topic = question.topic_id ? data.topics.get(question.topic_id) : undefined
 
   return (
-    <main className="min-h-screen bg-bg">
+    <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
       <SessionHeader
         current={currentIndex}
         total={data.questions.length}
@@ -144,24 +146,70 @@ export default function DrillSessionPage() {
         )}
       </div>
 
-      {/* Exit prompt */}
+      {/* Exit prompt modal */}
       {showExitPrompt && (
-        <div className="fixed inset-0 bg-bg/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-surface border border-border rounded-lg p-6 max-w-sm w-full">
-            <h3 className="font-serif text-xl text-primary mb-2">Save and exit?</h3>
-            <p className="text-secondary text-sm mb-6">
-              Your progress will be saved. You can resume this session from the home screen.
+        <div
+          className="fixed inset-0 flex items-center justify-center z-50 p-4"
+          style={{ background: 'rgba(10,10,8,0.85)', backdropFilter: 'blur(4px)' }}
+        >
+          <div
+            style={{
+              background: 'var(--surface-2)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 14,
+              padding: '28px 28px 24px',
+              maxWidth: 360,
+              width: '100%',
+            }}
+            className="card-glow"
+          >
+            <h3
+              className="font-serif text-xl mb-2"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              Save and exit?
+            </h3>
+            <p
+              className="font-sans text-sm mb-7"
+              style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}
+            >
+              Your progress will be saved. Resume from the home screen.
             </p>
             <div className="flex gap-3">
               <button
                 onClick={handleExit}
-                className="flex-1 bg-accent text-bg font-medium py-2 rounded-lg hover:opacity-90 transition"
+                style={{
+                  flex: 1,
+                  background: 'var(--amber)',
+                  color: '#0A0A08',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontWeight: 500,
+                  fontSize: 14,
+                  padding: '10px 0',
+                  borderRadius: 8,
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all 150ms ease',
+                }}
+                className="hover:brightness-110 active:scale-[0.98]"
               >
                 Save & Exit
               </button>
               <button
                 onClick={() => setShowExitPrompt(false)}
-                className="flex-1 border border-border text-secondary py-2 rounded-lg hover:bg-surface2 transition"
+                style={{
+                  flex: 1,
+                  background: 'transparent',
+                  color: 'var(--text-secondary)',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontSize: 14,
+                  padding: '10px 0',
+                  borderRadius: 8,
+                  border: '1px solid var(--surface-border)',
+                  cursor: 'pointer',
+                  transition: 'all 150ms ease',
+                }}
+                className="hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
               >
                 Keep Going
               </button>

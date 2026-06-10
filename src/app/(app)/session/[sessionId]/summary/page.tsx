@@ -24,63 +24,171 @@ export default async function SessionSummaryPage({ params }: { params: Promise<{
   const topicNames = (topicsData ?? []).map((t: Pick<Topic, 'id' | 'name'>) => t.name).join(' · ')
 
   const grade =
-    pct >= 90 ? { label: 'Excellent', color: 'text-success', ring: 'ring-success/30', bg: 'bg-success/5' } :
-    pct >= 70 ? { label: 'Good', color: 'text-warning', ring: 'ring-warning/30', bg: 'bg-warning/5' } :
-    pct >= 50 ? { label: 'Building', color: 'text-accent', ring: 'ring-accent/30', bg: 'bg-accent-dim' } :
-               { label: 'Needs work', color: 'text-error', ring: 'ring-error/30', bg: 'bg-error/5' }
+    pct >= 90 ? { label: 'Excellent', color: 'var(--status-correct)',  bg: 'rgba(76,175,130,0.08)',  borderColor: 'rgba(76,175,130,0.25)' } :
+    pct >= 70 ? { label: 'Good',      color: 'var(--status-warning)',  bg: 'rgba(200,146,42,0.08)',  borderColor: 'rgba(200,146,42,0.25)' } :
+    pct >= 50 ? { label: 'Building',  color: 'var(--amber-text)',      bg: 'var(--amber-soft)',       borderColor: 'rgba(200,146,42,0.35)' } :
+                { label: 'Needs work', color: 'var(--status-wrong)',   bg: 'rgba(224,90,90,0.08)',   borderColor: 'rgba(224,90,90,0.25)' }
 
   return (
-    <main className="min-h-screen bg-bg flex flex-col items-center justify-center px-4 py-12">
+    <main
+      className="min-h-screen flex flex-col items-center justify-center px-5 py-12"
+      style={{ background: 'var(--surface-base)' }}
+    >
       <div className="max-w-sm w-full space-y-4">
 
-        {/* Score */}
-        <div className={`${grade.bg} border ${grade.ring.replace('ring','border')} rounded-2xl p-8 text-center`}>
-          <p className="text-secondary text-xs uppercase tracking-widest mb-4">Session complete</p>
-          <div className={`font-serif text-8xl font-semibold mb-2 ${grade.color}`}>{pct}%</div>
-          <p className={`text-xl font-medium mb-4 ${grade.color}`}>{grade.label}</p>
+        {/* Score card */}
+        <div
+          style={{
+            background: grade.bg,
+            border: `1px solid ${grade.borderColor}`,
+            borderTop: `3px solid ${grade.color}`,
+            borderRadius: 16,
+            padding: '36px 32px 28px',
+            textAlign: 'center',
+          }}
+          className="card-glow"
+        >
+          <p
+            className="font-sans text-[10px] uppercase tracking-widest mb-5"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Session complete
+          </p>
+
+          {/* Big score */}
+          <div
+            className="font-serif tabular-nums mb-1"
+            style={{ fontSize: '5rem', lineHeight: 1, color: grade.color, fontWeight: 600 }}
+          >
+            {pct}%
+          </div>
+          <p
+            className="font-sans text-lg font-medium mb-6"
+            style={{ color: grade.color }}
+          >
+            {grade.label}
+          </p>
 
           {/* Stats row */}
-          <div className="flex items-center justify-center gap-6 mt-4 pt-4 border-t border-border/50">
+          <div
+            className="flex items-center justify-center gap-6 pt-5"
+            style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}
+          >
             <div className="text-center">
-              <p className="text-success font-serif text-2xl">{correct}</p>
-              <p className="text-muted text-xs mt-0.5">Correct</p>
+              <p
+                className="font-serif text-2xl tabular-nums"
+                style={{ color: 'var(--status-correct)' }}
+              >
+                {correct}
+              </p>
+              <p
+                className="font-sans text-[11px] mt-0.5"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Correct
+              </p>
             </div>
-            <div className="w-px h-8 bg-border/50" />
+            <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)' }} />
             <div className="text-center">
-              <p className="text-error font-serif text-2xl">{wrong}</p>
-              <p className="text-muted text-xs mt-0.5">Wrong</p>
+              <p
+                className="font-serif text-2xl tabular-nums"
+                style={{ color: 'var(--status-wrong)' }}
+              >
+                {wrong}
+              </p>
+              <p
+                className="font-sans text-[11px] mt-0.5"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Wrong
+              </p>
             </div>
-            <div className="w-px h-8 bg-border/50" />
+            <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)' }} />
             <div className="text-center">
-              <p className="text-primary font-serif text-2xl">{total}</p>
-              <p className="text-muted text-xs mt-0.5">Total</p>
+              <p
+                className="font-serif text-2xl tabular-nums"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {total}
+              </p>
+              <p
+                className="font-sans text-[11px] mt-0.5"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Total
+              </p>
             </div>
           </div>
         </div>
 
         {topicNames && (
-          <p className="text-muted text-xs text-center px-2">{topicNames}</p>
+          <p
+            className="font-sans text-xs text-center px-2"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {topicNames}
+          </p>
         )}
 
-        {/* Actions */}
+        {/* Actions — primary then secondary, stacked */}
         <div className="space-y-2.5">
-          <Link href="/study/drill"
-            className="block w-full bg-accent text-bg font-medium py-3.5 rounded-xl hover:opacity-90 transition text-center">
+          <Link
+            href="/study/drill"
+            style={{
+              display: 'block',
+              width: '100%',
+              textAlign: 'center',
+              background: 'var(--amber)',
+              color: '#0A0A08',
+              fontFamily: 'var(--font-dm-sans)',
+              fontWeight: 500,
+              fontSize: 14,
+              padding: '14px 24px',
+              borderRadius: 8,
+              transition: 'all 150ms ease',
+            }}
+            className="hover:brightness-110 active:scale-[0.98]"
+          >
             Start another session
           </Link>
-          <Link href="/home"
-            className="block w-full border border-border text-secondary py-3.5 rounded-xl hover:bg-surface2 transition text-center">
+          <Link
+            href="/home"
+            style={{
+              display: 'block',
+              width: '100%',
+              textAlign: 'center',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              fontFamily: 'var(--font-dm-sans)',
+              fontSize: 14,
+              padding: '14px 24px',
+              borderRadius: 8,
+              border: '1px solid rgba(200,146,42,0.25)',
+              transition: 'all 150ms ease',
+            }}
+            className="hover:border-[rgba(200,146,42,0.4)] hover:text-[var(--amber-text)] hover:bg-[var(--amber-glow)]"
+          >
             Back to dashboard
           </Link>
         </div>
 
-        {/* Encouragement */}
+        {/* Low score encouragement */}
         {pct < 70 && (
-          <div className="bg-surface border border-border rounded-xl p-4 text-center">
-            <p className="text-secondary text-sm">
+          <div
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 10,
+              padding: '16px 18px',
+            }}
+          >
+            <p
+              className="font-sans text-sm leading-relaxed"
+              style={{ color: 'var(--text-secondary)' }}
+            >
               {pct < 50
-                ? "These topics need more work. Try drilling them again — repetition is how SQE1 knowledge sticks."
-                : "Getting there. Focus on the questions you got wrong and revisit this topic in a day or two."}
+                ? 'These topics need more work. Try drilling them again — repetition is how SQE1 knowledge sticks.'
+                : 'Getting there. Focus on the questions you got wrong and revisit this topic in a day or two.'}
             </p>
           </div>
         )}
