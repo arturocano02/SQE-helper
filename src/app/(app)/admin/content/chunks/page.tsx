@@ -692,6 +692,26 @@ export default function ChunksPage() {
               />
             </label>
 
+            {editing.exact_source_quote && (
+              <div className="block mb-4">
+                <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--amber-text)' }}>
+                  📋 Sample question source (verbatim — admin view only, never shown to users)
+                </span>
+                <p
+                  className="font-sans text-sm p-3 rounded"
+                  style={{
+                    color: 'var(--text-secondary)',
+                    background: 'var(--surface-1)',
+                    border: '1px solid var(--surface-border)',
+                    lineHeight: 1.6,
+                    fontStyle: 'italic',
+                  }}
+                >
+                  &ldquo;{editing.exact_source_quote}&rdquo;
+                </p>
+              </div>
+            )}
+
             <label className="block mb-4">
               <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>Context / surrounding law (optional)</span>
               <textarea
@@ -1005,6 +1025,29 @@ function ChunkListRow({
           <p className="font-sans text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {chunk.source_section}
           </p>
+        )}
+
+        {chunk.exact_source_quote && (
+          <details className="mt-1.5">
+            <summary
+              className="font-sans text-[11px] cursor-pointer"
+              style={{ color: 'var(--amber-text)' }}
+            >
+              📋 Sample question source
+            </summary>
+            <p
+              className="font-sans text-xs mt-1.5 p-2 rounded"
+              style={{
+                color: 'var(--text-secondary)',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--surface-border)',
+                lineHeight: 1.5,
+                fontStyle: 'italic',
+              }}
+            >
+              &ldquo;{chunk.exact_source_quote}&rdquo;
+            </p>
+          </details>
         )}
       </div>
 

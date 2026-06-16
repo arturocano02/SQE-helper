@@ -1,10 +1,10 @@
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
-import type { Topic, UserTopicMastery } from '@/types/database'
+import type { Topic, UserTopicMastery, Confidence } from '@/types/database'
 import MasteryBar from '@/components/ui/MasteryBar'
 import Badge from '@/components/ui/Badge'
-import { masteryLabel } from '@/lib/mastery'
+import { masteryLabel, masteryFromConfidence } from '@/lib/mastery'
 
 function getMasteryColor(score: number): string {
   if (score >= 70) return 'var(--status-correct)'
@@ -37,6 +37,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
     { data: topicQuestions },
     { data: srsData },
     { data: recentHistory },
+    { data: topicChunks },
   ] = await Promise.all([
     supabase.from('user_topic_mastery').select('*').eq('user_id', user.id).eq('topic_id', t.id).single(),
     // All approved questions for this topic
@@ -51,7 +52,21 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
       .eq('is_imported', false)
       .order('answered_at', { ascending: false })
       .limit(200),
+    // Approved knowledge chunks for this topic, to show subtopic coverage
+    supabase
+      .from('knowledge_chunks')
+      .select('id, source_section')
+      .eq('topic_id', t.id)
+      .eq('is_approved', true),
   ])
+
+  const { data: coverageData } = await supabase
+    .from('user_topic_coverage')
+    .select('confidence')
+    .eq('user_id', user.id)
+    .eq('topic_id', t.id)
+    .maybeSingle()
+  const declaredConfidence = (coverageData as { confidence: Confidence } | null)?.confidence ?? null
 
   const mastery = masteryData as UserTopicMastery | null
   const questions = topicQuestions ?? []
@@ -139,6 +154,67 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
   const score = mastery?.mastery_score ?? 0
   const hasMastery = !!mastery
 
+  // --- Knowledge chunk / subtopic coverage ---
+  const chunks = (topicChunks ?? []) as Array<{ id: string; source_section: string | null }>
+  const chunkIds = chunks.map(c => c.id)
+  let chunkMastery: Array<{ chunk_id: string; attempt_count: number | null }> = []
+  if (chunkIds.length > 0) {
+    const { data: cm } = await supabase
+      .from('user_chunk_mastery')
+      .select('chunk_id, attempt_count')
+      .eq('user_id', user.id)
+      .in('chunk_id', chunkIds)
+    chunkMastery = (cm ?? []) as Array<{ chunk_id: string; attempt_count: number | null }>
+  }
+  const attemptsByChunk = new Map(chunkMastery.map(c => [c.chunk_id, c.attempt_count ?? 0]))
+
+  const sectionGroups = new Map<string, { totalChunks: number; attemptedChunks: number; totalAttempts: number }>()
+  chunks.forEach(c => {
+    const section = c.source_section || 'Uncategorised'
+    const attempts = attemptsByChunk.get(c.id) ?? 0
+    const g = sectionGroups.get(section) ?? { totalChunks: 0, attemptedChunks: 0, totalAttempts: 0 }
+    g.totalChunks += 1
+    if (attempts > 0) g.attemptedChunks += 1
+    g.totalAttempts += attempts
+    sectionGroups.set(section, g)
+  })
+  const maxAttempts = Math.max(1, ...Array.from(sectionGroups.values()).map(g => g.totalAttempts))
+  const coverageRows = Array.from(sectionGroups.entries())
+    .map(([section, g]) => ({
+      section,
+      ...g,
+      coverage: g.totalChunks > 0 ? g.attemptedChunks / g.totalChunks : 0,
+      intensity: g.totalAttempts / maxAttempts,
+    }))
+    .sort((a, b) => a.coverage - b.coverage)
+
+  // --- Declared confidence vs measured mastery ---
+  const declaredScore = declaredConfidence ? masteryFromConfidence(declaredConfidence) : null
+  const enoughData = hasMastery && questionsAttempted >= 5
+  let calibration: { agrees: boolean; message: string; ctaDifficulty: 'hard' | 'medium' | 'any' } | null = null
+  if (declaredScore !== null && enoughData) {
+    const gap = score - declaredScore
+    if (Math.abs(gap) <= 12) {
+      calibration = {
+        agrees: true,
+        message: `Your declared confidence (${declaredConfidence}) lines up with how you're actually performing here.`,
+        ctaDifficulty: 'hard',
+      }
+    } else if (gap < -12) {
+      calibration = {
+        agrees: false,
+        message: `You said you felt "${declaredConfidence}" on this topic, but your measured mastery (${score}) is running behind that. Worth a closer look.`,
+        ctaDifficulty: 'medium',
+      }
+    } else {
+      calibration = {
+        agrees: false,
+        message: `You're outperforming your declared "${declaredConfidence}" confidence — measured mastery is ${score}. You may be more ready here than you think.`,
+        ctaDifficulty: 'hard',
+      }
+    }
+  }
+
   return (
     <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
       <header style={{ borderBottom: '1px solid var(--surface-border)' }}>
@@ -185,8 +261,40 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
           </p>
         </div>
 
+        {/* Confidence calibration */}
+        {calibration && (
+          <div
+            style={{
+              background: calibration.agrees ? 'rgba(76,175,130,0.06)' : 'rgba(200,146,42,0.06)',
+              border: `1px solid ${calibration.agrees ? 'rgba(76,175,130,0.25)' : 'rgba(200,146,42,0.3)'}`,
+              borderRadius: 12,
+              padding: '16px 18px',
+            }}
+            className="flex items-center justify-between gap-4 flex-wrap"
+          >
+            <p className="font-sans text-sm flex-1 min-w-[200px]" style={{ color: 'var(--text-primary)', lineHeight: 1.5 }}>
+              {calibration.agrees ? '✓ ' : '⚡ '}{calibration.message}
+            </p>
+            <Link
+              href={`/study/drill?topics=${t.id}${calibration.ctaDifficulty !== 'any' ? `&difficulty=${calibration.ctaDifficulty}` : ''}`}
+              style={{
+                background: 'var(--amber)',
+                color: '#0A0A08',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 500,
+                fontSize: 13,
+                padding: '9px 18px',
+                borderRadius: 8,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Let&apos;s test that
+            </Link>
+          </div>
+        )}
+
         {/* Quick launch */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Link
             href={`/study/drill?topics=${t.id}`}
             style={{
@@ -261,7 +369,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
                 </span>
               )}
             </div>
-            <div className="grid grid-cols-3 gap-4 mb-5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
               {(['easy', 'medium', 'hard'] as const).map(d => {
                 const correct = mastery[`${d}_correct`]
                 const total = mastery[`${d}_total`]
@@ -294,7 +402,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
 
             {/* Stats row */}
             <div
-              className="flex items-center gap-6 pt-4"
+              className="flex items-center gap-6 pt-4 flex-wrap"
               style={{ borderTop: '1px solid var(--surface-border)' }}
             >
               <StatPill label="Attempted" value={`${questionsAttempted}/${totalAvailable}`} />
@@ -308,6 +416,52 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
               {dueCount > 0 && (
                 <StatPill label="Due for review" value={`${dueCount}`} amber />
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Knowledge coverage by subtopic */}
+        {coverageRows.length > 0 && (
+          <div
+            style={{
+              background: 'var(--surface-1)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 12,
+              padding: '20px 24px',
+            }}
+            className="card-glow"
+          >
+            <h2 className="font-serif text-lg mb-1" style={{ color: 'var(--text-primary)' }}>
+              Knowledge Coverage
+            </h2>
+            <p className="font-sans text-xs mb-5" style={{ color: 'var(--text-secondary)' }}>
+              How much you&apos;ve practised each part of this topic — fainter rows mean less coverage
+            </p>
+            <div className="space-y-2.5">
+              {coverageRows.map(row => (
+                <div
+                  key={row.section}
+                  className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg"
+                  style={{
+                    background: 'var(--surface-2)',
+                    opacity: 0.35 + row.coverage * 0.65,
+                  }}
+                >
+                  <p
+                    className="font-sans text-sm truncate"
+                    style={{ color: 'var(--text-primary)' }}
+                    title={row.section}
+                  >
+                    {row.section}
+                  </p>
+                  <span
+                    className="font-mono text-[11px] shrink-0"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    {row.attemptedChunks}/{row.totalChunks} rules practised
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
         )}

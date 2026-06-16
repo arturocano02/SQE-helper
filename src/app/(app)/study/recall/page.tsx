@@ -7,6 +7,7 @@ import type { Topic, UserTopicMastery, Difficulty } from '@/types/database'
 import TopicCard from '@/components/ui/TopicCard'
 import Button from '@/components/ui/Button'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
+import ModeExplainerModal from '@/components/study/ModeExplainerModal'
 
 export default function RecallLauncherPage() {
   return (
@@ -90,6 +91,7 @@ function RecallLauncherInner() {
 
   return (
     <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
+      <ModeExplainerModal mode="recall" />
       <header style={{ borderBottom: '1px solid var(--surface-border)' }}>
         <div className="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between gap-4">
           <div>
@@ -99,7 +101,7 @@ function RecallLauncherInner() {
             </p>
           </div>
           <Button onClick={handleStart} disabled={selected.size === 0} loading={launching} size="lg">
-            {selected.size === 0 ? 'Select a topic' : `Start Recall (${selected.size}) →`}
+            {selected.size === 0 ? 'Select a topic' : `Start Recall (${selected.size})`}
           </Button>
         </div>
       </header>

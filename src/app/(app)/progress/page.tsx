@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import type { Topic, UserTopicMastery } from '@/types/database'
 import MasteryBar from '@/components/ui/MasteryBar'
 import Badge from '@/components/ui/Badge'
-import { masteryLabel } from '@/lib/mastery'
+import { masteryLabel, masteryGateMessage } from '@/lib/mastery'
 
 function getMasteryColor(score: number): string {
   if (score >= 70) return 'var(--status-correct)'
@@ -87,18 +87,20 @@ export default async function ProgressPage() {
           >
             Mastery by Topic
           </h2>
-          <div className="space-y-2.5">
+          <div className="space-y-3">
             {topicsWithMastery.map(topic => {
               const score = topic.mastery?.mastery_score ?? 0
               const hasMastery = !!topic.mastery
+              const gate = topic.mastery ? masteryGateMessage(topic.mastery) : null
+              const easyTotal = topic.mastery?.easy_total ?? 0
+              const medTotal = topic.mastery?.medium_total ?? 0
+              const hardTotal = topic.mastery?.hard_total ?? 0
               return (
                 <Link
                   key={topic.id}
                   href={`/topics/${topic.slug}`}
+                  className="card-glow card-glow-hover flex flex-col gap-3"
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 16,
                     padding: '14px 16px',
                     borderRadius: 10,
                     background: hasMastery ? getMasteryBg(score) : 'var(--surface-1)',
@@ -108,32 +110,58 @@ export default async function ProgressPage() {
                     borderBottom: '1px solid var(--surface-border)',
                     transition: 'all 150ms ease',
                   }}
-                  className="card-glow card-glow-hover"
                 >
-                  <div style={{ width: 140, flexShrink: 0 }}>
-                    <p
-                      className="text-xs font-sans truncate"
-                      style={{ color: 'var(--text-secondary)' }}
-                    >
-                      {topic.name}
-                    </p>
-                    <Badge variant={topic.paper} className="mt-0.5">{topic.paper}</Badge>
+                  {/* Top row: name + badge + score */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p
+                        className="text-sm font-sans truncate"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {topic.name}
+                      </p>
+                      <Badge variant={topic.paper} className="mt-1">{topic.paper}</Badge>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p
+                        className="font-serif text-lg tabular-nums leading-none"
+                        style={{ color: hasMastery ? getMasteryColor(score) : 'var(--text-muted)' }}
+                      >
+                        {score}
+                      </p>
+                      <p
+                        className="text-[10px] font-sans mt-0.5"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        {masteryLabel(score)}
+                      </p>
+                    </div>
                   </div>
-                  <MasteryBar score={score} className="flex-1" />
-                  <div className="text-right" style={{ width: 80, flexShrink: 0 }}>
-                    <p
-                      className="font-serif text-lg tabular-nums"
-                      style={{ color: hasMastery ? getMasteryColor(score) : 'var(--text-muted)' }}
-                    >
-                      {score}
-                    </p>
-                    <p
-                      className="text-[10px] font-sans"
+
+                  {/* Mastery bar — full width */}
+                  <MasteryBar score={score} className="w-full" />
+
+                  {/* Per-difficulty attempt counts */}
+                  {hasMastery && (easyTotal + medTotal + hardTotal > 0) && (
+                    <div
+                      className="flex items-center gap-3 font-sans text-[11px]"
                       style={{ color: 'var(--text-muted)' }}
                     >
-                      {masteryLabel(score)}
+                      <span>E {topic.mastery?.easy_correct ?? 0}/{easyTotal}</span>
+                      <span>M {topic.mastery?.medium_correct ?? 0}/{medTotal}</span>
+                      <span>H {topic.mastery?.hard_correct ?? 0}/{hardTotal}</span>
+                    </div>
+                  )}
+
+                  {/* Gate hint — what's blocking the next tier */}
+                  {gate && (
+                    <p
+                      className="font-sans text-[11px] italic"
+                      style={{ color: 'var(--amber-text)' }}
+                    >
+                      {gate}
                     </p>
-                  </div>
+                  )}
                 </Link>
               )
             })}

@@ -327,6 +327,12 @@ export default function SignInPage() {
         >
           By continuing, you agree to our Terms and Privacy Policy.
         </p>
+        <p
+          className="mt-2 font-sans text-xs text-center"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Questions and explanations are AI-generated and can contain mistakes — always double-check anything that matters.
+        </p>
       </div>
     </main>
   )

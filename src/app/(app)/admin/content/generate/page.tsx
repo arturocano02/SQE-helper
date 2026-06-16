@@ -44,6 +44,7 @@ export default function AdminGeneratePage() {
   const [topics, setTopics] = useState<Topic[]>([])
   const [loadingTopics, setLoadingTopics] = useState(true)
   const [selectedTopicIds, setSelectedTopicIds] = useState<Set<string>>(new Set())
+  const [contentType, setContentType] = useState<'mcq' | 'flashcard'>('mcq')
   const [difficulty, setDifficulty] = useState<'mixed' | 'easy' | 'medium' | 'hard'>('mixed')
   const [countPerTopic, setCountPerTopic] = useState(10)
   const [targetStatus, setTargetStatus] = useState<'draft' | 'approved'>('draft')
@@ -96,6 +97,7 @@ export default function AdminGeneratePage() {
           difficulty,
           count_per_topic: countPerTopic,
           status: targetStatus,
+          content_type: contentType,
         }),
       })
 
@@ -148,10 +150,10 @@ export default function AdminGeneratePage() {
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="font-serif text-2xl" style={{ color: 'var(--text-primary)' }}>
-              Generate Questions
+              Generate Content
             </h1>
             <p className="font-sans text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-              Generate MCQ questions from approved knowledge chunks
+              Generate MCQ questions or flashcards from approved knowledge chunks
             </p>
           </div>
           <Link
@@ -275,6 +277,43 @@ export default function AdminGeneratePage() {
               Settings
             </h2>
 
+            {/* Content type */}
+            <div className="mb-6">
+              <label className="font-sans text-sm block mb-2.5" style={{ color: 'var(--text-secondary)' }}>
+                Content type
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { value: 'mcq' as const, label: 'MCQ', description: 'Five options, full explanation per option' },
+                  { value: 'flashcard' as const, label: 'Flashcard', description: 'Short prompt + short answer — snappy, mobile-friendly' },
+                ].map(ct => {
+                  const active = contentType === ct.value
+                  return (
+                    <button
+                      key={ct.value}
+                      onClick={() => setContentType(ct.value)}
+                      className="text-left rounded-lg px-3 py-2.5 transition"
+                      style={{
+                        background: active ? 'var(--accent-dim)' : 'var(--surface-2)',
+                        border: `1px solid ${active ? 'rgba(200,146,42,0.35)' : 'var(--surface-border)'}`,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <p
+                        className="font-sans text-sm font-medium"
+                        style={{ color: active ? 'var(--amber-text)' : 'var(--text-primary)' }}
+                      >
+                        {ct.label}
+                      </p>
+                      <p className="font-sans text-[10px] mt-0.5 leading-tight" style={{ color: 'var(--text-muted)' }}>
+                        {ct.description}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
             {/* Count per topic */}
             <div className="mb-6">
               <div className="flex items-center justify-between mb-2">
@@ -385,7 +424,9 @@ export default function AdminGeneratePage() {
                 <>
                   <p className="font-sans text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
                     Generate up to{' '}
-                    <span style={{ color: 'var(--amber-text)' }}>{totalEstimated} questions</span>
+                    <span style={{ color: 'var(--amber-text)' }}>
+                      {totalEstimated} {contentType === 'flashcard' ? 'flashcards' : 'questions'}
+                    </span>
                     {' '}across{' '}
                     <span style={{ color: 'var(--amber-text)' }}>{totalSelected} topic{totalSelected !== 1 ? 's' : ''}</span>
                   </p>

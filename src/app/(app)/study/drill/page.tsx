@@ -7,6 +7,7 @@ import type { Topic, UserTopicMastery, Difficulty } from '@/types/database'
 import TopicCard from '@/components/ui/TopicCard'
 import Button from '@/components/ui/Button'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
+import ModeExplainerModal from '@/components/study/ModeExplainerModal'
 
 export default function DrillLauncherPage() {
   return (
@@ -29,18 +30,20 @@ function DrillLauncherInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const preselectedId = searchParams.get('topics')
+  const preselectedDifficulty = searchParams.get('difficulty') as Difficulty | null
 
   const [topics, setTopics] = useState<Topic[]>([])
   const [mastery, setMastery] = useState<Map<string, UserTopicMastery>>(new Map())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [paper, setPaper] = useState<'all' | 'FLK1' | 'FLK2'>('all')
-  const [difficulty, setDifficulty] = useState<Difficulty | 'any'>('any')
+  const [difficulty, setDifficulty] = useState<Difficulty | 'any'>(
+    preselectedDifficulty && ['easy', 'medium', 'hard'].includes(preselectedDifficulty)
+      ? preselectedDifficulty
+      : 'any'
+  )
   const [count, setCount] = useState(25)
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showGenerateModal, setShowGenerateModal] = useState(false)
-  const [generating, setGenerating] = useState(false)
-  const [generateResult, setGenerateResult] = useState<string | null>(null)
 
   useEffect(() => {
     const supabase = createClient()
@@ -97,33 +100,11 @@ function DrillLauncherInner() {
     }
   }
 
-  async function handleGenerateMore() {
-    if (selected.size === 0) return
-    setGenerating(true)
-    setGenerateResult(null)
-    try {
-      const res = await fetch('/api/questions/generate-more', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic_ids: Array.from(selected),
-          difficulty: difficulty === 'any' ? undefined : difficulty,
-          count: 10,
-        }),
-      })
-      const data = await res.json()
-      setGenerateResult(data.message ?? `${data.generated} questions added.`)
-    } catch {
-      setGenerateResult('Generation failed — please try again.')
-    } finally {
-      setGenerating(false)
-    }
-  }
-
   const filteredTopics = topics.filter(t => paper === 'all' || t.paper === paper)
 
   return (
     <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
+      <ModeExplainerModal mode="drill" />
       {/* Header */}
       <header style={{ borderBottom: '1px solid var(--surface-border)' }}>
         <div className="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between gap-4">
@@ -136,24 +117,6 @@ function DrillLauncherInner() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowGenerateModal(true)}
-              disabled={selected.size === 0}
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--surface-border)',
-                color: selected.size > 0 ? 'var(--text-secondary)' : 'var(--text-muted)',
-                fontFamily: 'var(--font-dm-sans)',
-                fontSize: 13,
-                padding: '8px 14px',
-                borderRadius: 8,
-                cursor: selected.size > 0 ? 'pointer' : 'not-allowed',
-                transition: 'all 150ms ease',
-              }}
-              title="Generate more questions for selected topics"
-            >
-              ✦ Generate more
-            </button>
             <Button
               onClick={handleStart}
               disabled={selected.size === 0}
@@ -162,7 +125,7 @@ function DrillLauncherInner() {
             >
               {selected.size === 0
                 ? 'Select a topic'
-                : `Start Drill (${selected.size}) →`}
+                : `Start Drill (${selected.size})`}
             </Button>
           </div>
         </div>
@@ -252,148 +215,6 @@ function DrillLauncherInner() {
           </div>
         )}
 
-        {/* Generate more modal */}
-        {showGenerateModal && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(10,10,8,0.85)', backdropFilter: 'blur(4px)' }}
-            onClick={e => { if (e.target === e.currentTarget) { setShowGenerateModal(false); setGenerateResult(null) } }}
-          >
-            <div
-              style={{
-                background: 'var(--surface-2)',
-                border: '1px solid var(--surface-border)',
-                borderRadius: 14,
-                padding: 28,
-                maxWidth: 400,
-                width: '100%',
-              }}
-              className="card-glow"
-            >
-              <h3 className="font-serif text-xl mb-2" style={{ color: 'var(--text-primary)' }}>
-                Generate more questions
-              </h3>
-              <p className="font-sans text-sm mb-6" style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                Claude generates 10 new questions from the knowledge bank for your selected topics.
-                They&apos;re available to everyone once added.
-              </p>
-
-              <div className="mb-5">
-                <p className="font-sans text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
-                  Difficulty for new questions
-                </p>
-                <div className="flex gap-2">
-                  {(['any', 'easy', 'medium', 'hard'] as const).map(d => (
-                    <button
-                      key={d}
-                      onClick={() => setDifficulty(d)}
-                      style={{
-                        flex: 1,
-                        padding: '7px 0',
-                        borderRadius: 6,
-                        fontSize: 12,
-                        fontFamily: 'var(--font-dm-sans)',
-                        border: difficulty === d ? '1px solid rgba(200,146,42,0.5)' : '1px solid var(--surface-border)',
-                        background: difficulty === d ? 'var(--amber-soft)' : 'var(--surface-1)',
-                        color: difficulty === d ? 'var(--amber-text)' : 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        textTransform: 'capitalize',
-                      }}
-                    >
-                      {d === 'any' ? 'Mixed' : d}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {generateResult && (
-                <p
-                  className="font-sans text-sm mb-4 p-3 rounded-lg"
-                  style={{
-                    background: generateResult.includes('failed') || generateResult.includes('plenty')
-                      ? 'rgba(251,191,36,0.08)'
-                      : 'rgba(74,222,128,0.06)',
-                    color: generateResult.includes('failed') || generateResult.includes('plenty')
-                      ? 'var(--status-warning)'
-                      : 'var(--status-correct)',
-                    border: '1px solid currentColor',
-                    borderColor: 'rgba(74,222,128,0.2)',
-                  }}
-                >
-                  {generateResult}
-                </p>
-              )}
-
-              <div className="flex gap-3">
-                {!generateResult ? (
-                  <button
-                    onClick={handleGenerateMore}
-                    disabled={generating}
-                    style={{
-                      flex: 1,
-                      background: 'var(--amber)',
-                      color: '#0A0A08',
-                      fontFamily: 'var(--font-dm-sans)',
-                      fontWeight: 600,
-                      fontSize: 14,
-                      padding: '10px 0',
-                      borderRadius: 8,
-                      border: 'none',
-                      cursor: generating ? 'not-allowed' : 'pointer',
-                      opacity: generating ? 0.7 : 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 8,
-                    }}
-                  >
-                    {generating && (
-                      <span
-                        className="w-4 h-4 rounded-full animate-spin block"
-                        style={{ border: '2px solid rgba(10,10,8,0.4)', borderTopColor: '#0A0A08' }}
-                      />
-                    )}
-                    {generating ? 'Generating…' : 'Generate 10 questions'}
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => { setShowGenerateModal(false); setGenerateResult(null) }}
-                    style={{
-                      flex: 1,
-                      background: 'var(--amber)',
-                      color: '#0A0A08',
-                      fontFamily: 'var(--font-dm-sans)',
-                      fontWeight: 600,
-                      fontSize: 14,
-                      padding: '10px 0',
-                      borderRadius: 8,
-                      border: 'none',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Done
-                  </button>
-                )}
-                <button
-                  onClick={() => { setShowGenerateModal(false); setGenerateResult(null) }}
-                  style={{
-                    flex: 1,
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    fontFamily: 'var(--font-dm-sans)',
-                    fontSize: 14,
-                    padding: '10px 0',
-                    borderRadius: 8,
-                    border: '1px solid var(--surface-border)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Topic grid */}
         {filteredTopics.length > 0 ? (

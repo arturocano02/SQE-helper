@@ -36,13 +36,22 @@ MCQ rules:
 - Four plausible distractors that test genuine understanding (not obviously wrong)
 - The question should be self-contained — include enough scenario/context in the prompt
 - Explanation: why the correct answer is right AND specifically why each wrong option fails
+- Vary which letter (A–E) holds the correct answer from question to question — do not default to A. Place the correct answer at a position you choose deliberately so that across many questions the correct letter is evenly spread across A, B, C, D and E.
 
 Difficulty calibration:
 - easy: pure rule recall — "What is the test for X?" or "Under which section does Y apply?"
 - medium: single-issue application to a fact pattern — "On these facts, what is the outcome?"
 - hard: multi-step reasoning, competing rules, or traps where the obvious answer is wrong
 
+ACCURACY — this is the most important rule. Students trust this app completely; a single wrong fact destroys that trust:
+- Only state statute sections, case names, time limits, monetary thresholds, percentages, and other figures that appear in the supplied knowledge chunk/context, or that you are highly confident are well-established, unambiguous SQE1 law.
+- Never invent or guess a specific number, date, section number, or case name. If the knowledge chunk doesn't give you a precise figure you need, write the question so it doesn't depend on one, rather than fabricating it.
+- Double-check any arithmetic in the question or explanation (e.g. tax calculations, limitation periods, cost awards) by working it through step by step before writing the final figure.
+- If you are not fully certain a stated rule is current and correct, do not include it as a distractor's "reason it's wrong" — only assert what you can verify from the chunk.
+
 ${TOPIC_GUIDE}
+
+You may also be given STYLE REFERENCE examples drawn from real sample questions for this topic. Use them only to match tone, structure, the type of legal knowledge tested, and how explanations are phrased. Never reuse their exact wording, facts, names, or scenarios — the new question must be entirely original.
 
 Return ONLY valid JSON, no markdown:
 {"topic_slug":"string","type":"mcq","difficulty":"easy"|"medium"|"hard","prompt":"string","options":[{"label":"A","text":"..."},{"label":"B","text":"..."},{"label":"C","text":"..."},{"label":"D","text":"..."},{"label":"E","text":"..."}],"correct_answer":"A"|"B"|"C"|"D"|"E","explanation":"string"}`
@@ -63,18 +72,42 @@ const VALID_SLUGS = new Set([
   'solicitors-accounts','criminal-law',
 ])
 
+// Shuffles a generated MCQ's options so the correct answer isn't biased toward any one letter.
+function shuffleCorrectAnswer(q: GeneratedQuestion): GeneratedQuestion {
+  if (!q.options || q.options.length !== 5 || !q.correct_answer) return q
+  const correctOption = q.options.find(o => o.label === q.correct_answer)
+  if (!correctOption) return q
+
+  const labels = ['A', 'B', 'C', 'D', 'E']
+  const texts = q.options.map(o => o.text)
+  // Fisher-Yates shuffle of option texts
+  for (let i = texts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[texts[i], texts[j]] = [texts[j], texts[i]]
+  }
+  const newOptions = labels.map((label, i) => ({ label, text: texts[i] }))
+  const newCorrectLabel = newOptions.find(o => o.text === correctOption.text)?.label ?? q.correct_answer
+
+  return { ...q, options: newOptions, correct_answer: newCorrectLabel }
+}
+
 async function generateFromChunk(
   ruleText: string,
   contextText: string | null,
   topicName: string,
   difficulty: Difficulty,
+  styleExamples: string[],
 ): Promise<GeneratedQuestion | null> {
+  const styleBlock = styleExamples.length > 0
+    ? `\n\nSTYLE REFERENCE (inspiration only — never copy verbatim):\n${styleExamples.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+    : ''
+
   const userMessage = `Topic: ${topicName}
 Difficulty: ${difficulty}
 
 Knowledge chunk (legal rule to test):
 ${ruleText}
-${contextText ? `\nContext:\n${contextText}` : ''}`
+${contextText ? `\nContext:\n${contextText}` : ''}${styleBlock}`
 
   try {
     const message = await client.messages.create({
@@ -89,7 +122,7 @@ ${contextText ? `\nContext:\n${contextText}` : ''}`
     const parsed = JSON.parse(cleaned) as GeneratedQuestion
 
     if (!parsed.prompt || !parsed.correct_answer || !VALID_SLUGS.has(parsed.topic_slug)) return null
-    return { ...parsed, difficulty }
+    return shuffleCorrectAnswer({ ...parsed, difficulty })
   } catch {
     return null
   }
@@ -132,14 +165,14 @@ export async function POST(request: Request) {
     })
   }
 
-  // Fetch approved chunks for these topics — prefer chunks with fewer linked questions
+  // Fetch ALL approved chunks for these topics (not just the most recent) so generation
+  // can be spread fairly across the whole knowledge graph, not just newly-added chunks.
   const { data: chunks } = await admin
     .from('knowledge_chunks')
     .select('id, topic_id, rule_text, context_text, topics(name)')
     .in('topic_id', topic_ids)
     .eq('is_approved', true)
     .order('created_at')
-    .limit(cappedCount * 3) // fetch extra so we can pick the least-covered ones
 
   if (!chunks || chunks.length === 0) {
     return NextResponse.json({
@@ -148,8 +181,48 @@ export async function POST(request: Request) {
     })
   }
 
-  // Shuffle and take cappedCount chunks to generate from
-  const shuffled = [...chunks].sort(() => Math.random() - 0.5).slice(0, cappedCount)
+  // Count how many questions already exist per chunk, so we can prefer least-used chunks
+  // and avoid generation favouring a subset of the knowledge graph.
+  const chunkIdsAll = chunks.map(c => c.id)
+  const usageCounts = new Map<string, number>(chunkIdsAll.map(id => [id, 0]))
+  if (chunkIdsAll.length > 0) {
+    const { data: usageRows } = await admin
+      .from('questions')
+      .select('knowledge_chunk_id')
+      .in('knowledge_chunk_id', chunkIdsAll)
+    for (const row of usageRows ?? []) {
+      const id = (row as { knowledge_chunk_id: string | null }).knowledge_chunk_id
+      if (id) usageCounts.set(id, (usageCounts.get(id) ?? 0) + 1)
+    }
+  }
+
+  // Sort least-used-first (random tiebreak among equally-used chunks), then take what we need.
+  const shuffled = [...chunks]
+    .map(c => ({ c, jitter: Math.random() }))
+    .sort((a, b) => {
+      const diff = (usageCounts.get(a.c.id) ?? 0) - (usageCounts.get(b.c.id) ?? 0)
+      return diff !== 0 ? diff : a.jitter - b.jitter
+    })
+    .map(x => x.c)
+    .slice(0, cappedCount)
+
+  // Pull per-topic sample-question style references (verbatim quotes extracted from
+  // uploaded sample papers) to inspire tone/structure — never copied verbatim into output.
+  const { data: styleChunks } = await admin
+    .from('knowledge_chunks')
+    .select('topic_id, exact_source_quote')
+    .in('topic_id', topic_ids)
+    .not('exact_source_quote', 'is', null)
+    .limit(200)
+
+  const styleByTopic = new Map<string, string[]>()
+  for (const row of styleChunks ?? []) {
+    const r = row as { topic_id: string; exact_source_quote: string | null }
+    if (!r.exact_source_quote) continue
+    const list = styleByTopic.get(r.topic_id) ?? []
+    if (list.length < 5) list.push(r.exact_source_quote)
+    styleByTopic.set(r.topic_id, list)
+  }
 
   // Resolve topic_id → topic name map
   const topicNameMap = new Map<string, string>()
@@ -178,7 +251,8 @@ export async function POST(request: Request) {
   for (const chunk of shuffled) {
     if (generated.length >= cappedCount) break
     const topicName = topicNameMap.get(chunk.topic_id) ?? 'UK Law'
-    const q = await generateFromChunk(chunk.rule_text, chunk.context_text, topicName, useDifficulty)
+    const examples = styleByTopic.get(chunk.topic_id) ?? []
+    const q = await generateFromChunk(chunk.rule_text, chunk.context_text, topicName, useDifficulty, examples)
     if (q) {
       generated.push(q)
       chunkIds.push(chunk.id)

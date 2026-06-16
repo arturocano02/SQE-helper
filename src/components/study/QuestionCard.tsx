@@ -203,8 +203,8 @@ export default function QuestionCard({
               <div
                 key={opt.label}
                 style={{
-                  maxHeight: isHidden ? 0 : 200,
-                  overflow: 'hidden',
+                  maxHeight: isHidden ? 0 : 'none',
+                  overflow: isHidden ? 'hidden' : 'visible',
                   opacity: isHidden ? 0 : 1,
                   marginBottom: isHidden ? 0 : undefined,
                   transition: 'max-height 250ms ease, opacity 200ms ease, margin 250ms ease',
@@ -386,7 +386,7 @@ export default function QuestionCard({
                 className="font-sans text-[10px] font-medium uppercase tracking-widest mb-2"
                 style={{ color: 'var(--text-muted)' }}
               >
-                Source Rule
+                This answer was determined from this knowledge chunk
               </p>
               <p
                 className="font-sans text-sm leading-relaxed mb-3"
@@ -412,7 +412,7 @@ export default function QuestionCard({
                 </div>
               )}
               <p className="font-sans text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                📍 {result.chunk.source_section}
+                📍 Found in your source notes at: {result.chunk.source_section}
               </p>
             </div>
           )}

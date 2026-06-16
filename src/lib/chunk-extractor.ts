@@ -37,7 +37,10 @@ export interface DocSection {
 
 export interface ExtractedChunk {
   rule_text: string         // verbatim source text, formatting preserved (markdown-style)
-  exact_source_quote: null  // deprecated — rule_text IS the source now
+  // Populated only in "questions" mode — the verbatim correct-answer/explanation text
+  // from the sample question this chunk was extracted from. Used later as a style
+  // reference for AI-generated questions (never reproduced verbatim in new questions).
+  exact_source_quote: string | null
   context_text?: string | null
   key_terms: string[]
   rule_type: 'definition' | 'threshold' | 'test' | 'exception' | 'procedure' | 'consequence' | 'general_principle' | 'uncertain'
@@ -1086,7 +1089,7 @@ async function extractChunksFromQuestionBatch(
     .filter(c => c.rule_text && c.rule_text.trim().length > 10)
     .map(c => ({
       rule_text: c.rule_text.trim(),
-      exact_source_quote: null,
+      exact_source_quote: c.exact_source_quote?.trim() || null,
       context_text: c.context_text ?? null,
       key_terms: Array.isArray(c.key_terms) ? c.key_terms : [],
       rule_type: (c.rule_type as ExtractedChunk['rule_type']) ?? 'general_principle',

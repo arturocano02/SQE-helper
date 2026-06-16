@@ -39,7 +39,8 @@ export async function GET(request: Request) {
       onboarding_complete: false,
       is_admin: isAdmin,
     })
-    return NextResponse.redirect(`${origin}${isAdmin ? '/admin' : '/onboarding'}`)
+    const dest = isAdmin ? '/admin' : '/onboarding'
+    return NextResponse.redirect(`${origin}/welcome?next=${encodeURIComponent(dest)}`)
   }
 
   // Self-heal: ensure admin flag is always correct
@@ -47,7 +48,9 @@ export async function GET(request: Request) {
     await supabase.from('profiles').update({ is_admin: true }).eq('id', data.user.id)
   }
 
-  if (isAdmin) return NextResponse.redirect(`${origin}/admin`)
-  if (!profile.onboarding_complete) return NextResponse.redirect(`${origin}/onboarding`)
-  return NextResponse.redirect(`${origin}${next}`)
+  let dest = next
+  if (isAdmin) dest = '/admin'
+  else if (!profile.onboarding_complete) dest = '/onboarding'
+
+  return NextResponse.redirect(`${origin}/welcome?next=${encodeURIComponent(dest)}`)
 }
