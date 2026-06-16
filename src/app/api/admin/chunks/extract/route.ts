@@ -99,12 +99,98 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
       }
 
-      try {
-        const chunks = useQuestionsMode
-          ? await extractChunksFromQuestions(material.raw_text!, topic_name ?? 'SQE1', send)
-          : await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send)
+      // Fetch all topics once upfront — needed for slug → topic_id resolution
+      const { data: allTopics } = await admin.from('topics').select('id, slug')
+      const slugToTopicId = new Map((allTopics ?? []).map((t: { id: string; slug: string }) => [t.slug, t.id]))
+      const fallbackTopicId = topic_id ?? null
+      const subtopicMap = new Map<string, string>()
 
-        if (chunks.length === 0) {
+      let totalInserted = 0
+      let sortIndex = 0
+
+      /**
+       * Ensure subtopic exists and return its id. Cached in subtopicMap.
+       */
+      async function ensureSubtopic(resolvedTopicId: string, subtopicName: string): Promise<string | null> {
+        const mapKey = `${resolvedTopicId}:${subtopicName}`
+        if (subtopicMap.has(mapKey)) return subtopicMap.get(mapKey)!
+
+        const slug = subtopicName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        const { data: existing } = await admin
+          .from('subtopics').select('id')
+          .eq('topic_id', resolvedTopicId).eq('slug', slug)
+          .maybeSingle()
+        if (existing) { subtopicMap.set(mapKey, existing.id); return existing.id }
+
+        const { data: created } = await admin
+          .from('subtopics')
+          .insert({ topic_id: resolvedTopicId, name: subtopicName, slug })
+          .select('id').single()
+        if (created) { subtopicMap.set(mapKey, created.id); return created.id }
+        return null
+      }
+
+      /**
+       * Flush a batch of ExtractedChunks to the DB immediately.
+       * Called after each section completes so partial progress is preserved
+       * if the connection drops later.
+       */
+      async function flushChunks(chunks: import('@/lib/chunk-extractor').ExtractedChunk[]): Promise<number> {
+        const rows = await Promise.all(
+          chunks.map(async (c) => {
+            const resolvedTopicId = (c.topic_slug ? slugToTopicId.get(c.topic_slug) : null) ?? fallbackTopicId
+            if (!resolvedTopicId) return null
+            const subtopicId = await ensureSubtopic(resolvedTopicId, c.subtopic_name)
+            return {
+              topic_id: resolvedTopicId,
+              subtopic_id: subtopicId,
+              source_material_id,
+              rule_text: c.rule_text,
+              exact_source_quote: c.exact_source_quote ?? null,
+              context_text: c.context_text ?? null,
+              source_section: c.source_section,
+              key_terms: c.key_terms,
+              rule_type: c.rule_type,
+              is_approved: false,
+              sort_order: sortIndex++,
+            }
+          })
+        )
+        const validRows = rows.filter((r): r is NonNullable<typeof r> => r !== null)
+        if (validRows.length === 0) return 0
+
+        let flushed = 0
+        for (let i = 0; i < validRows.length; i += 100) {
+          await admin.from('knowledge_chunks').insert(validRows.slice(i, i + 100))
+          flushed += Math.min(100, validRows.length - i)
+        }
+        return flushed
+      }
+
+      // Shared per-section/per-batch flush — called by the extractor after each unit completes.
+      // Chunks are inserted to DB immediately, so if the SSE connection drops mid-extraction
+      // everything flushed so far is already persisted and visible in the Knowledge Graph.
+      async function onChunks(chunks: import('@/lib/chunk-extractor').ExtractedChunk[]) {
+        const flushed = await flushChunks(chunks)
+        totalInserted += flushed
+        // Keep source_materials.chunks_extracted current so the admin page reflects live progress
+        // even if the browser tab is closed and they come back later.
+        await admin
+          .from('source_materials')
+          .update({ chunks_extracted: totalInserted })
+          .eq('id', source_material_id)
+      }
+
+      try {
+        if (useQuestionsMode) {
+          // Questions mode: flush after each batch of ~5 questions
+          await extractChunksFromQuestions(material.raw_text!, topic_name ?? 'SQE1', send, onChunks)
+        } else {
+          // Notes mode: flush after each section — large docs with many sections are fully safe
+          await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send, onChunks)
+        }
+
+        if (totalInserted === 0) {
           await admin.from('source_materials').update({
             chunk_status: 'failed',
             chunk_error: 'No chunks extracted — check document structure',
@@ -114,90 +200,33 @@ export async function POST(request: Request) {
           return
         }
 
-        // Fetch all topics so we can resolve slug → topic_id per chunk
-        const { data: allTopics } = await admin.from('topics').select('id, slug')
-        const slugToTopicId = new Map((allTopics ?? []).map((t: { id: string; slug: string }) => [t.slug, t.id]))
-        const fallbackTopicId = topic_id ?? null
-
-        // Get or create subtopics — keyed by "topic_id:subtopic_name"
-        const subtopicMap = new Map<string, string>()
-
-        for (const chunk of chunks) {
-          const resolvedTopicId = (chunk.topic_slug ? slugToTopicId.get(chunk.topic_slug) : null) ?? fallbackTopicId
-          if (!resolvedTopicId) continue
-
-          const sname = chunk.subtopic_name
-          const mapKey = `${resolvedTopicId}:${sname}`
-          if (subtopicMap.has(mapKey)) continue
-
-          const slug = sname.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-          const { data: existing } = await admin
-            .from('subtopics')
-            .select('id')
-            .eq('topic_id', resolvedTopicId)
-            .eq('slug', slug)
-            .maybeSingle()
-
-          if (existing) {
-            subtopicMap.set(mapKey, existing.id)
-          } else {
-            const { data: created } = await admin
-              .from('subtopics')
-              .insert({ topic_id: resolvedTopicId, name: sname, slug })
-              .select('id')
-              .single()
-            if (created) subtopicMap.set(mapKey, created.id)
-          }
-        }
-
-        // Batch insert chunks (100 at a time to avoid payload limits)
-        const rows = chunks
-          .map((c, i) => {
-            const resolvedTopicId = (c.topic_slug ? slugToTopicId.get(c.topic_slug) : null) ?? fallbackTopicId
-            if (!resolvedTopicId) return null
-            const mapKey = `${resolvedTopicId}:${c.subtopic_name}`
-            return {
-              topic_id: resolvedTopicId,
-              subtopic_id: subtopicMap.get(mapKey) ?? null,
-              source_material_id,
-              rule_text: c.rule_text,
-              exact_source_quote: c.exact_source_quote ?? null,
-              context_text: c.context_text ?? null,
-              source_section: c.source_section,
-              key_terms: c.key_terms,
-              rule_type: c.rule_type,
-              is_approved: false,
-              sort_order: i,
-            }
-          })
-          .filter((r): r is NonNullable<typeof r> => r !== null)
-
-        let inserted = 0
-        for (let i = 0; i < rows.length; i += 100) {
-          const batch = rows.slice(i, i + 100)
-          await admin.from('knowledge_chunks').insert(batch)
-          inserted += batch.length
-        }
-
-        // Update source material status
         await admin.from('source_materials').update({
           chunk_status: 'extracted',
-          chunks_extracted: inserted,
+          chunks_extracted: totalInserted,
         }).eq('id', source_material_id)
 
         send({
           stage: 'done',
-          message: `Done — ${inserted} knowledge chunks saved`,
-          chunks_found: inserted,
-          sections_done: inserted,
+          message: `Done — ${totalInserted} knowledge chunks saved`,
+          chunks_found: totalInserted,
+          sections_done: totalInserted,
         })
       } catch (err) {
+        // Even if we error out, preserve whatever was inserted before the failure
         const msg = err instanceof Error ? err.message : 'Extraction failed'
         await admin.from('source_materials').update({
-          chunk_status: 'failed',
-          chunk_error: msg,
+          chunk_status: totalInserted > 0 ? 'extracted' : 'failed',
+          chunk_error: totalInserted > 0 ? `Partial extraction — stopped after ${totalInserted} chunks: ${msg}` : msg,
+          chunks_extracted: totalInserted,
         }).eq('id', source_material_id)
-        send({ stage: 'error', message: msg, error: msg })
+        send({
+          stage: 'error',
+          message: totalInserted > 0
+            ? `Stopped after ${totalInserted} chunks — ${msg}. Partial results saved and available in the Knowledge Graph.`
+            : msg,
+          error: msg,
+          chunks_found: totalInserted,
+        })
       } finally {
         controller.close()
       }

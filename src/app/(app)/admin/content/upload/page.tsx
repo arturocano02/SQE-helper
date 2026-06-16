@@ -36,6 +36,13 @@ interface ChunkExtractionState {
   sectionsTotal?: number
   sectionsDone?: number
   chunksFound?: number
+  /** Section paths found by the parser — shown so admin can verify all topics were detected */
+  sectionsFound?: string[]
+  /** Heading styles the parser auto-detected in this document and the level assigned to each —
+   *  shown so a misread hierarchy (wrong style ranked as the wrong level) is visible before
+   *  extraction runs, since the parser discovers formatting conventions per-document rather
+   *  than assuming a fixed colour scheme. */
+  headingStyles?: Array<{ level: number; kind: string; sample: string; count: number; source: string }>
 }
 
 export default function AdminUploadPage() {
@@ -138,16 +145,23 @@ export default function AdminUploadPage() {
         if (!line.startsWith('data: ')) continue
         try {
           const ev = JSON.parse(line.slice(6))
-          setChunkExtraction(prev => ({
-            ...prev,
-            [fileName]: {
-              status: ev.stage === 'done' ? 'done' : ev.stage === 'error' ? 'error' : 'running',
-              message: ev.message ?? '',
-              sectionsTotal: ev.sections_total,
-              sectionsDone: ev.sections_done,
-              chunksFound: ev.chunks_found,
-            },
-          }))
+          setChunkExtraction(prev => {
+            const existing = prev[fileName] ?? {}
+            return {
+              ...prev,
+              [fileName]: {
+                ...existing,
+                status: ev.stage === 'done' ? 'done' : ev.stage === 'error' ? 'error' : 'running',
+                message: ev.message ?? '',
+                sectionsTotal: ev.sections_total ?? existing.sectionsTotal,
+                sectionsDone: ev.sections_done ?? existing.sectionsDone,
+                chunksFound: ev.chunks_found ?? existing.chunksFound,
+                // Latch the section list once we receive it — don't overwrite with undefined later
+                sectionsFound: ev.sections_found ?? existing.sectionsFound,
+                headingStyles: ev.heading_styles ?? existing.headingStyles,
+              },
+            }
+          })
         } catch { /* skip */ }
       }
     }
@@ -437,6 +451,61 @@ export default function AdminUploadPage() {
                             </span>
                           )}
                         </div>
+
+                        {(isRunning || isDone) && state.sectionsFound && (
+                          <details
+                            className="mt-2 mb-1"
+                            open={isRunning}
+                          >
+                            <summary
+                              className="font-sans text-[11px] cursor-pointer select-none"
+                              style={{ color: 'var(--text-muted)' }}
+                            >
+                              {state.sectionsFound.length} sections found — click to verify all topics detected
+                            </summary>
+                            <div
+                              className="mt-1 rounded-lg overflow-y-auto"
+                              style={{
+                                maxHeight: 180,
+                                background: 'var(--surface-2)',
+                                border: '1px solid var(--surface-border)',
+                                padding: '8px 10px',
+                              }}
+                            >
+                              {state.sectionsFound.map((s, i) => (
+                                <p key={i} className="font-mono text-[10px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+                                  {s}
+                                </p>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+
+                        {(isRunning || isDone) && state.headingStyles && state.headingStyles.length > 0 && (
+                          <details className="mt-2 mb-1">
+                            <summary
+                              className="font-sans text-[11px] cursor-pointer select-none"
+                              style={{ color: 'var(--text-muted)' }}
+                            >
+                              {state.headingStyles.length} heading styles detected — click to check the hierarchy was read correctly
+                            </summary>
+                            <div
+                              className="mt-1 rounded-lg overflow-y-auto"
+                              style={{
+                                maxHeight: 220,
+                                background: 'var(--surface-2)',
+                                border: '1px solid var(--surface-border)',
+                                padding: '8px 10px',
+                              }}
+                            >
+                              {state.headingStyles.map((h, i) => (
+                                <p key={i} className="font-mono text-[10px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+                                  L{h.level} {h.kind} ({h.source === 'word-style' ? 'Word style' : 'visual'}, ×{h.count}) — &quot;{h.sample}&quot;
+                                </p>
+                              ))}
+                            </div>
+                          </details>
+                        )}
 
                         {isRunning && (
                           <div>
