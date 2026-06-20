@@ -17,6 +17,8 @@ export type FeedbackType =
   | 'misleading_question'
   // Knowledge-chunk specific
   | 'chunk_dispute'
+  // Flashcard-specific
+  | 'flashcard_dispute'
   // App-level
   | 'bug'
   | 'feature_request'
@@ -24,6 +26,7 @@ export type FeedbackType =
   | 'other'
 export type FeedbackStatus = 'pending' | 'reviewed' | 'actioned' | 'dismissed'
 export type ContentRequestStatus = 'pending' | 'done' | 'dismissed'
+export type AiVerdict = 'correct' | 'partial' | 'incorrect'
 
 export interface Feedback {
   id: string
@@ -156,6 +159,9 @@ export interface QuestionHistory {
   self_assessment: SelfAssessment | null
   answered_at: string
   is_imported: boolean
+  user_answer_text: string | null
+  ai_verdict: AiVerdict | null
+  ai_score: number | null
 }
 
 export interface UserTopicMastery {

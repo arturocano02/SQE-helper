@@ -10,7 +10,7 @@ import type { FeedbackType } from '@/types/database'
 
 const VALID_TYPES: FeedbackType[] = [
   'wrong_answer', 'poor_explanation', 'outdated_law', 'misleading_question',
-  'chunk_dispute', 'bug', 'feature_request', 'content_request', 'other',
+  'chunk_dispute', 'flashcard_dispute', 'bug', 'feature_request', 'content_request', 'other',
 ]
 
 export async function POST(request: Request) {

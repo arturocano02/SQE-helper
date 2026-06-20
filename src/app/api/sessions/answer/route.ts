@@ -2,12 +2,15 @@ import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { updateSrs, defaultSrsState } from '@/lib/srs'
 import { calculateMasteryScore } from '@/lib/mastery'
+import { gradeFlashcardAnswer } from '@/lib/grade-flashcard'
+import type { AiVerdict } from '@/types/database'
 
 interface AnswerBody {
   session_id: string
   question_id: string
-  selected_answer: string
+  selected_answer?: string
   self_assessment?: 'got_it' | 'nearly' | 'missed_it'
+  answer_text?: string
 }
 
 const SELF_ASSESSMENT_QUALITY: Record<string, number> = {
@@ -16,18 +19,27 @@ const SELF_ASSESSMENT_QUALITY: Record<string, number> = {
   missed_it: 1,
 }
 
+// Maps an AI-graded score to the same self-assessment buckets used by SM-2,
+// so flashcard grading slots straight into the existing SRS pipeline.
+function verdictToSelfAssessment(score: number): 'got_it' | 'nearly' | 'missed_it' {
+  if (score >= 80) return 'got_it'
+  if (score >= 50) return 'nearly'
+  return 'missed_it'
+}
+
 export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body: AnswerBody = await request.json()
-  const { session_id, question_id, selected_answer, self_assessment } = body
+  const { session_id, question_id, selected_answer, answer_text } = body
+  let self_assessment = body.self_assessment
 
   const admin = createAdminClient()
   const { data: question } = await admin
     .from('questions')
-    .select('correct_answer, explanation, difficulty, topic_id, type, knowledge_chunk_id')
+    .select('correct_answer, explanation, difficulty, topic_id, type, knowledge_chunk_id, prompt')
     .eq('id', question_id)
     .single()
 
@@ -35,8 +47,24 @@ export async function POST(request: Request) {
 
   // Determine correctness:
   // - MCQ: compare selected_answer to correct_answer
-  // - Flashcard: use self_assessment (got_it/nearly = correct, missed_it = incorrect)
+  // - Flashcard with typed answer: AI-grade answer_text against the model answer
+  // - Flashcard (legacy): use self_assessment (got_it/nearly = correct, missed_it = incorrect)
   const isFlashcard = question.type === 'flashcard' || !question.correct_answer
+
+  let ai_verdict: AiVerdict | null = null
+  let ai_score: number | null = null
+
+  if (isFlashcard && answer_text?.trim()) {
+    const graded = await gradeFlashcardAnswer({
+      prompt: question.prompt,
+      modelAnswer: question.explanation ?? '',
+      userAnswer: answer_text.trim(),
+    })
+    ai_verdict = graded.verdict
+    ai_score = graded.score
+    self_assessment = verdictToSelfAssessment(graded.score)
+  }
+
   const was_correct = isFlashcard
     ? (self_assessment === 'got_it' || self_assessment === 'nearly')
     : question.correct_answer === selected_answer
@@ -52,8 +80,11 @@ export async function POST(request: Request) {
     question_id,
     session_id,
     was_correct,
-    selected_answer,
+    selected_answer: selected_answer ?? null,
     self_assessment: self_assessment ?? null,
+    user_answer_text: answer_text?.trim() ?? null,
+    ai_verdict,
+    ai_score,
     answered_at: new Date().toISOString(),
   })
 
@@ -192,5 +223,7 @@ export async function POST(request: Request) {
     correct_answer: question.correct_answer,
     explanation: question.explanation ?? '',
     chunk: chunkCitation,
+    ai_verdict,
+    ai_score,
   })
 }

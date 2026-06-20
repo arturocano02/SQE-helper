@@ -26,6 +26,7 @@ const TYPE_LABELS: Record<FeedbackType, string> = {
   outdated_law: 'Outdated law',
   misleading_question: 'Misleading question',
   chunk_dispute: 'Knowledge chunk dispute',
+  flashcard_dispute: 'Flashcard grading dispute',
   bug: 'Bug report',
   feature_request: 'Feature request',
   content_request: 'Content request',

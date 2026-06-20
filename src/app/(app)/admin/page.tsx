@@ -34,21 +34,37 @@ export default async function AdminDashboardPage() {
       .limit(100),
   ])
 
-  const [{ count: totalChunks }, { count: approvedChunks }, { count: pendingFeedback }, { count: pendingContentRequests }] = await Promise.all([
+  const [
+    { count: totalChunks },
+    { count: approvedChunks },
+    { count: pendingFeedback },
+    { count: pendingContentRequests },
+    { count: totalMcq },
+    { count: approvedMcq },
+    { count: totalFlashcards },
+    { count: approvedFlashcards },
+  ] = await Promise.all([
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }),
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }).eq('is_approved', true),
     admin.from('feedback').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
     admin.from('content_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+    admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'mcq'),
+    admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'mcq').eq('status', 'approved'),
+    admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'flashcard'),
+    admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'flashcard').eq('status', 'approved'),
   ])
 
   const { data: qPerTopic } = await admin
     .from('questions')
-    .select('topic_id, status')
+    .select('topic_id, status, type')
     .eq('status', 'approved')
 
-  const topicQMap = new Map<string, number>()
-  ;(qPerTopic ?? []).forEach((q: { topic_id: string | null }) => {
-    if (q.topic_id) topicQMap.set(q.topic_id, (topicQMap.get(q.topic_id) ?? 0) + 1)
+  const topicMcqMap = new Map<string, number>()
+  const topicFlashcardMap = new Map<string, number>()
+  ;(qPerTopic ?? []).forEach((q: { topic_id: string | null; type: 'mcq' | 'flashcard' }) => {
+    if (!q.topic_id) return
+    if (q.type === 'mcq') topicMcqMap.set(q.topic_id, (topicMcqMap.get(q.topic_id) ?? 0) + 1)
+    else topicFlashcardMap.set(q.topic_id, (topicFlashcardMap.get(q.topic_id) ?? 0) + 1)
   })
 
   // Aggregate (all-users) answered count per topic — how much of the bank has actually been used.
@@ -246,6 +262,10 @@ export default async function AdminDashboardPage() {
             <StatCard label="Approved" value={approvedQuestions ?? 0} accent />
             <StatCard label="Awaiting Review" value={draftQuestions ?? 0} warning={!!draftQuestions} />
           </div>
+          <div className="grid grid-cols-2 gap-3 mb-5">
+            <StatCard label="MCQs" value={totalMcq ?? 0} sub={`${approvedMcq ?? 0} approved`} />
+            <StatCard label="Flashcards" value={totalFlashcards ?? 0} sub={`${approvedFlashcards ?? 0} approved`} accent />
+          </div>
 
           {/* Per-topic bars */}
           <div
@@ -258,21 +278,28 @@ export default async function AdminDashboardPage() {
             className="card-glow"
           >
             <div
-              className="p-4"
+              className="p-4 flex items-center justify-between"
               style={{ borderBottom: '1px solid var(--surface-border)' }}
             >
               <p
                 className="font-sans text-sm"
                 style={{ color: 'var(--text-secondary)' }}
               >
-                Approved questions by topic
+                Approved content by topic
               </p>
+              <div className="flex items-center gap-4">
+                <span className="font-sans text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  <span style={{ color: 'var(--text-primary)' }}>●</span> MCQ
+                </span>
+                <span className="font-sans text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  <span style={{ color: 'var(--amber-text)' }}>●</span> Flashcard
+                </span>
+              </div>
             </div>
             <div>
               {((topics ?? []) as Array<{ id: string; name: string; paper: string }>).map(t => {
-                const count = topicQMap.get(t.id) ?? 0
-                const maxCount = Math.max(...Array.from(topicQMap.values()), 1)
-                const pct = Math.round((count / maxCount) * 100)
+                const mcqCount = topicMcqMap.get(t.id) ?? 0
+                const flashcardCount = topicFlashcardMap.get(t.id) ?? 0
                 const answered = topicAnsweredMap.get(t.id) ?? 0
                 return (
                   <div
@@ -293,27 +320,26 @@ export default async function AdminDashboardPage() {
                     </span>
                     <span
                       className="font-sans text-sm shrink-0 truncate"
-                      style={{ width: 200, color: 'var(--text-primary)' }}
+                      style={{ width: 180, color: 'var(--text-primary)' }}
                     >
                       {t.name}
                     </span>
-                    <div
-                      className="flex-1 rounded-full overflow-hidden"
-                      style={{ height: 5, background: 'var(--surface-3)' }}
-                    >
-                      <div
-                        className="h-full rounded-full progress-fill"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
                     <span
-                      className="font-mono text-sm tabular-nums"
-                      style={{ color: 'var(--text-secondary)', width: 28, textAlign: 'right', flexShrink: 0 }}
+                      className="font-mono text-sm tabular-nums shrink-0"
+                      style={{ color: 'var(--text-primary)', width: 60, textAlign: 'right' }}
+                      title="Approved MCQs"
                     >
-                      {count}
+                      {mcqCount} mcq
                     </span>
                     <span
-                      className="font-mono text-[11px] tabular-nums shrink-0"
+                      className="font-mono text-sm tabular-nums shrink-0"
+                      style={{ color: 'var(--amber-text)', width: 90, textAlign: 'right' }}
+                      title="Approved flashcards"
+                    >
+                      {flashcardCount} flash
+                    </span>
+                    <span
+                      className="font-mono text-[11px] tabular-nums shrink-0 ml-auto"
                       style={{ color: 'var(--text-muted)', width: 90, textAlign: 'right' }}
                       title="Total answers given by all users for this topic"
                     >

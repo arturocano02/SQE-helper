@@ -3,12 +3,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { Question, Topic } from '@/types/database'
+import type { Question, Topic, AiVerdict } from '@/types/database'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 import ProgressBar from '@/components/ui/ProgressBar'
 import Badge from '@/components/ui/Badge'
 
-type SelfAssessment = 'got_it' | 'nearly' | 'missed_it'
+type Phase = 'answering' | 'grading' | 'graded'
 
 export default function RecallSessionPage() {
   const { sessionId } = useParams<{ sessionId: string }>()
@@ -16,8 +16,14 @@ export default function RecallSessionPage() {
   const [questions, setQuestions] = useState<Question[]>([])
   const [topics, setTopics] = useState<Map<string, Topic>>(new Map())
   const [currentIndex, setCurrentIndex] = useState(0)
-  const [revealed, setRevealed] = useState(false)
   const [loading, setLoading] = useState(true)
+
+  const [phase, setPhase] = useState<Phase>('answering')
+  const [userAnswer, setUserAnswer] = useState('')
+  const [verdict, setVerdict] = useState<AiVerdict | null>(null)
+  const [score, setScore] = useState<number | null>(null)
+  const [modelAnswer, setModelAnswer] = useState('')
+  const [disputeState, setDisputeState] = useState<'idle' | 'sending' | 'sent'>('idle')
 
   useEffect(() => {
     async function load() {
@@ -43,21 +49,28 @@ export default function RecallSessionPage() {
     load()
   }, [sessionId, router])
 
-  const handleAssessment = useCallback(async (assessment: SelfAssessment) => {
+  const submitAnswer = useCallback(async () => {
     const question = questions[currentIndex]
-    if (!question) return
+    if (!question || !userAnswer.trim() || phase !== 'answering') return
 
-    await fetch('/api/sessions/answer', {
+    setPhase('grading')
+    const res = await fetch('/api/sessions/answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
         question_id: question.id,
-        selected_answer: assessment,
-        self_assessment: assessment,
+        answer_text: userAnswer.trim(),
       }),
     })
+    const data = await res.json()
+    setVerdict(data.ai_verdict ?? null)
+    setScore(typeof data.ai_score === 'number' ? data.ai_score : null)
+    setModelAnswer(data.explanation ?? question.explanation ?? '')
+    setPhase('graded')
+  }, [questions, currentIndex, sessionId, userAnswer, phase])
 
+  const goNext = useCallback(async () => {
     const nextIndex = currentIndex + 1
     if (nextIndex >= questions.length) {
       await fetch('/api/sessions/complete', {
@@ -68,23 +81,44 @@ export default function RecallSessionPage() {
       router.push(`/session/${sessionId}/summary`)
     } else {
       setCurrentIndex(nextIndex)
-      setRevealed(false)
+      setPhase('answering')
+      setUserAnswer('')
+      setVerdict(null)
+      setScore(null)
+      setModelAnswer('')
+      setDisputeState('idle')
     }
-  }, [questions, currentIndex, sessionId, router])
+  }, [questions.length, currentIndex, sessionId, router])
+
+  const submitDispute = useCallback(async () => {
+    const question = questions[currentIndex]
+    if (!question) return
+    setDisputeState('sending')
+    await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        feedback_type: 'flashcard_dispute',
+        question_id: question.id,
+        description: `Student's answer: "${userAnswer.trim()}"\n\nAI verdict: ${verdict} (score ${score ?? '—'})\n\nModel answer: ${modelAnswer}`,
+      }),
+    })
+    setDisputeState('sent')
+  }, [questions, currentIndex, userAnswer, verdict, score, modelAnswer])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (!revealed) {
-        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setRevealed(true) }
-        return
+      if (phase === 'answering' && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault(); submitAnswer()
+      } else if (phase === 'graded' && (e.key === 'Enter' || e.key === ' ')) {
+        const active = document.activeElement
+        if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'BUTTON')) return
+        e.preventDefault(); goNext()
       }
-      if (e.key === '1') handleAssessment('missed_it')
-      if (e.key === '2') handleAssessment('nearly')
-      if (e.key === '3') handleAssessment('got_it')
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [revealed, handleAssessment])
+  }, [phase, submitAnswer, goNext])
 
   if (loading || questions.length === 0) {
     return (
@@ -99,6 +133,12 @@ export default function RecallSessionPage() {
 
   const question = questions[currentIndex]
   const topic = question.topic_id ? topics.get(question.topic_id) : undefined
+
+  const verdictStyle: Record<AiVerdict, { bg: string; border: string; text: string; label: string }> = {
+    correct: { bg: 'rgba(76,175,130,0.10)', border: 'rgba(76,175,130,0.35)', text: '#6ECFA3', label: 'Correct' },
+    partial: { bg: 'rgba(200,146,42,0.10)', border: 'rgba(200,146,42,0.35)', text: 'var(--amber-text)', label: 'Partially correct' },
+    incorrect: { bg: 'rgba(224,90,90,0.10)', border: 'rgba(224,90,90,0.35)', text: '#E87878', label: 'Incorrect' },
+  }
 
   return (
     <main
@@ -179,142 +219,191 @@ export default function RecallSessionPage() {
             </p>
           </div>
 
-          {!revealed ? (
-            <button
-              onClick={() => setRevealed(true)}
-              style={{
-                width: '100%',
-                border: '2px dashed var(--surface-border)',
-                borderRadius: 12,
-                padding: '18px',
-                background: 'transparent',
-                color: 'var(--text-secondary)',
-                fontFamily: 'var(--font-dm-sans)',
-                fontSize: 14,
-                cursor: 'pointer',
-                transition: 'all 150ms ease',
-              }}
-              className="hover:border-[rgba(200,146,42,0.4)] hover:text-[var(--text-primary)]"
-            >
-              Reveal answer
-              <span
-                className="ml-2 font-mono text-xs"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                (Space)
-              </span>
-            </button>
-          ) : (
+          {phase === 'answering' && (
             <>
-              {/* Answer card */}
+              <textarea
+                value={userAnswer}
+                onChange={e => setUserAnswer(e.target.value)}
+                placeholder="Type the rule from memory, in your own words…"
+                rows={5}
+                autoFocus
+                style={{
+                  width: '100%',
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 12,
+                  color: 'var(--text-primary)',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontSize: 14,
+                  padding: '14px 16px',
+                  resize: 'vertical',
+                  outline: 'none',
+                  marginBottom: 12,
+                }}
+              />
+              <button
+                onClick={submitAnswer}
+                disabled={!userAnswer.trim()}
+                style={{
+                  width: '100%',
+                  background: 'var(--amber)',
+                  color: '#0A0A08',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontWeight: 600,
+                  fontSize: 14,
+                  padding: '14px',
+                  borderRadius: 12,
+                  border: 'none',
+                  cursor: userAnswer.trim() ? 'pointer' : 'not-allowed',
+                  opacity: userAnswer.trim() ? 1 : 0.5,
+                  transition: 'all 150ms ease',
+                }}
+                className="active:scale-[0.99]"
+              >
+                Submit answer
+                <span className="ml-2 font-mono text-xs" style={{ opacity: 0.6 }}>
+                  (⌘+Enter)
+                </span>
+              </button>
+            </>
+          )}
+
+          {phase === 'grading' && (
+            <div className="flex flex-col items-center py-10 gap-3">
+              <LoadingSpinner size="md" />
+              <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Grading your answer…
+              </p>
+            </div>
+          )}
+
+          {phase === 'graded' && verdict && (
+            <>
+              {/* Verdict badge */}
+              <div
+                className="flex items-center gap-2 mb-4 px-4 py-2.5 rounded-xl"
+                style={{
+                  background: verdictStyle[verdict].bg,
+                  border: `1px solid ${verdictStyle[verdict].border}`,
+                }}
+              >
+                <span style={{ color: verdictStyle[verdict].text, fontSize: 16 }}>
+                  {verdict === 'correct' ? '✓' : verdict === 'partial' ? '≈' : '✗'}
+                </span>
+                <span
+                  className="font-sans text-sm font-medium"
+                  style={{ color: verdictStyle[verdict].text }}
+                >
+                  {verdictStyle[verdict].label}
+                </span>
+                {score !== null && (
+                  <span
+                    className="font-mono text-xs ml-auto"
+                    style={{ color: verdictStyle[verdict].text, opacity: 0.7 }}
+                  >
+                    {score}/100
+                  </span>
+                )}
+              </div>
+
+              {/* Your answer */}
+              <div
+                style={{
+                  background: 'var(--surface-1)',
+                  border: '1px solid var(--surface-border)',
+                  borderRadius: 14,
+                  padding: '16px 18px',
+                  marginBottom: 12,
+                }}
+              >
+                <p
+                  className="font-sans text-[10px] uppercase tracking-widest mb-2"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  Your answer
+                </p>
+                <p
+                  className="font-sans text-sm leading-relaxed whitespace-pre-line"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {userAnswer}
+                </p>
+              </div>
+
+              {/* Model answer */}
               <div
                 style={{
                   background: 'var(--surface-2)',
                   border: '1px solid var(--surface-border)',
                   borderRadius: 14,
-                  padding: '20px 22px',
-                  marginBottom: 20,
+                  padding: '16px 18px',
+                  marginBottom: 16,
                 }}
               >
                 <p
-                  className="font-sans text-[10px] uppercase tracking-widest mb-3"
+                  className="font-sans text-[10px] uppercase tracking-widest mb-2"
                   style={{ color: 'var(--text-muted)' }}
                 >
-                  Answer
+                  Full answer
                 </p>
                 <p
                   className="font-sans text-sm leading-relaxed whitespace-pre-line"
                   style={{ color: 'var(--text-primary)' }}
                 >
-                  {question.explanation ?? 'No answer available.'}
+                  {modelAnswer || 'No answer available.'}
                 </p>
               </div>
 
-              <p
-                className="text-center font-sans text-xs mb-3"
-                style={{ color: 'var(--text-muted)' }}
+              {verdict !== 'correct' && (
+                <div className="flex items-center justify-center mb-4">
+                  {disputeState === 'sent' ? (
+                    <p className="font-sans text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Sent to admin for review — thanks for flagging it.
+                    </p>
+                  ) : (
+                    <button
+                      onClick={submitDispute}
+                      disabled={disputeState === 'sending'}
+                      className="font-sans text-xs underline"
+                      style={{
+                        color: 'var(--text-muted)',
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: disputeState === 'sending' ? 'wait' : 'pointer',
+                      }}
+                    >
+                      {disputeState === 'sending' ? 'Sending…' : 'I believe my answer was actually correct →'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <button
+                onClick={goNext}
+                style={{
+                  width: '100%',
+                  background: 'var(--amber)',
+                  color: '#0A0A08',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontWeight: 600,
+                  fontSize: 14,
+                  padding: '14px',
+                  borderRadius: 12,
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all 150ms ease',
+                }}
+                className="active:scale-[0.99]"
               >
-                How did you do?
-              </p>
-              <div className="grid grid-cols-3 gap-2.5">
-                <AssessButton
-                  onClick={() => handleAssessment('missed_it')}
-                  color="wrong"
-                  icon="✗"
-                  label="Missed it"
-                  hint="1"
-                />
-                <AssessButton
-                  onClick={() => handleAssessment('nearly')}
-                  color="warn"
-                  icon="≈"
-                  label="Nearly"
-                  hint="2"
-                />
-                <AssessButton
-                  onClick={() => handleAssessment('got_it')}
-                  color="correct"
-                  icon="✓"
-                  label="Got it"
-                  hint="3"
-                />
-              </div>
+                Continue
+                <span className="ml-2 font-mono text-xs" style={{ opacity: 0.6 }}>
+                  (Enter)
+                </span>
+              </button>
             </>
           )}
         </div>
       </div>
     </main>
-  )
-}
-
-function AssessButton({
-  onClick,
-  color,
-  icon,
-  label,
-  hint,
-}: {
-  onClick: () => void
-  color: 'wrong' | 'warn' | 'correct'
-  icon: string
-  label: string
-  hint: string
-}) {
-  const colorMap = {
-    wrong:   { border: 'rgba(224,90,90,0.35)',  bg: 'rgba(224,90,90,0.07)',  text: '#E87878',            hover: 'rgba(224,90,90,0.14)' },
-    warn:    { border: 'rgba(200,146,42,0.35)',  bg: 'rgba(200,146,42,0.07)', text: 'var(--amber-text)',  hover: 'rgba(200,146,42,0.14)' },
-    correct: { border: 'rgba(76,175,130,0.35)',  bg: 'rgba(76,175,130,0.07)', text: '#6ECFA3',            hover: 'rgba(76,175,130,0.14)' },
-  }
-  const c = colorMap[color]
-
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        display: 'flex',
-        flexDirection: 'column' as const,
-        alignItems: 'center',
-        gap: 4,
-        padding: '14px 8px',
-        borderRadius: 12,
-        border: `1px solid ${c.border}`,
-        background: c.bg,
-        color: c.text,
-        cursor: 'pointer',
-        transition: 'all 150ms ease',
-        fontFamily: 'var(--font-dm-sans)',
-      }}
-      className="active:scale-95"
-      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = c.hover }}
-      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = c.bg }}
-    >
-      <span style={{ fontSize: 20 }}>{icon}</span>
-      <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
-      <span
-        style={{ fontSize: 10, opacity: 0.4, fontFamily: 'var(--font-dm-mono)' }}
-      >
-        {hint}
-      </span>
-    </button>
   )
 }
