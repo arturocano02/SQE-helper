@@ -34,6 +34,7 @@ export async function GET(request: Request) {
   const topic_id = searchParams.get('topic_id')
   const subtopic_id = searchParams.get('subtopic_id')
   const is_approved = searchParams.get('is_approved')
+  const needs_review = searchParams.get('needs_review')
   const source_material_id = searchParams.get('source_material_id')
   const page = parseInt(searchParams.get('page') ?? '1', 10)
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '100', 10), 500)
@@ -52,6 +53,7 @@ export async function GET(request: Request) {
   if (source_material_id) query = query.eq('source_material_id', source_material_id)
   if (is_approved === 'true') query = query.eq('is_approved', true)
   if (is_approved === 'false') query = query.eq('is_approved', false)
+  if (needs_review === 'true') query = query.eq('needs_review', true)
 
   const { data, error, count } = await query
 
@@ -102,7 +104,7 @@ export async function PUT(request: Request) {
 
   // Whitelist updatable fields
   const allowed: Record<string, unknown> = {}
-  for (const key of ['rule_text', 'context_text', 'source_section', 'key_terms', 'rule_type', 'is_approved', 'subtopic_id', 'sort_order']) {
+  for (const key of ['rule_text', 'context_text', 'source_section', 'key_terms', 'rule_type', 'is_approved', 'subtopic_id', 'sort_order', 'needs_review', 'inferred_difficulty', 'difficulty_reason']) {
     if (key in fields) allowed[key] = fields[key]
   }
 

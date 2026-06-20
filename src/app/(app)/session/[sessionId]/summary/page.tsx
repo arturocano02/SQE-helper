@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import type { Session, Topic } from '@/types/database'
+import SessionCelebration from '@/components/study/SessionCelebration'
 
 export default async function SessionSummaryPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = await params
@@ -34,6 +35,7 @@ export default async function SessionSummaryPage({ params }: { params: Promise<{
       className="min-h-screen flex flex-col items-center justify-center px-5 py-12"
       style={{ background: 'var(--surface-base)' }}
     >
+      <SessionCelebration pct={pct} />
       <div className="max-w-sm w-full space-y-4">
 
         {/* Score card */}

@@ -10,7 +10,7 @@ import type { FeedbackType } from '@/types/database'
 
 const VALID_TYPES: FeedbackType[] = [
   'wrong_answer', 'poor_explanation', 'outdated_law', 'misleading_question',
-  'bug', 'feature_request', 'content_request', 'other',
+  'chunk_dispute', 'bug', 'feature_request', 'content_request', 'other',
 ]
 
 export async function POST(request: Request) {
@@ -18,10 +18,11 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
 
   const body = await request.json()
-  const { feedback_type, description, question_id } = body as {
+  const { feedback_type, description, question_id, knowledge_chunk_id } = body as {
     feedback_type: FeedbackType
     description: string
     question_id?: string | null
+    knowledge_chunk_id?: string | null
   }
 
   if (!VALID_TYPES.includes(feedback_type)) {
@@ -35,12 +36,19 @@ export async function POST(request: Request) {
   const { error } = await admin.from('feedback').insert({
     user_id: user?.id ?? null,
     question_id: question_id ?? null,
+    knowledge_chunk_id: knowledge_chunk_id ?? null,
     feedback_type,
     description: description.trim(),
     status: 'pending',
   })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Disputing a chunk flags it for admin review in the Knowledge Graph page.
+  if (feedback_type === 'chunk_dispute' && knowledge_chunk_id) {
+    await admin.from('knowledge_chunks').update({ needs_review: true }).eq('id', knowledge_chunk_id)
+  }
+
   return NextResponse.json({ ok: true })
 }
 

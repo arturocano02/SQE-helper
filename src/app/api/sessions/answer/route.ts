@@ -130,7 +130,14 @@ export async function POST(request: Request) {
   }
 
   // Update user_chunk_mastery if question is linked to a knowledge chunk
-  let chunkCitation: { rule_text: string; source_section: string; key_terms: string[] } | null = null
+  let chunkCitation: {
+    id: string
+    rule_text: string
+    source_section: string
+    key_terms: string[]
+    source_page_start: number | null
+    source_page_end: number | null
+  } | null = null
 
   if (question.knowledge_chunk_id) {
     const chunkId = question.knowledge_chunk_id as string
@@ -138,15 +145,18 @@ export async function POST(request: Request) {
     // Fetch chunk data for citation in the explanation panel
     const { data: chunk } = await admin
       .from('knowledge_chunks')
-      .select('rule_text, source_section, key_terms')
+      .select('id, rule_text, source_section, key_terms, source_page_start, source_page_end')
       .eq('id', chunkId)
       .single()
 
     if (chunk) {
       chunkCitation = {
+        id: chunk.id,
         rule_text: chunk.rule_text,
         source_section: chunk.source_section,
         key_terms: Array.isArray(chunk.key_terms) ? chunk.key_terms : [],
+        source_page_start: chunk.source_page_start ?? null,
+        source_page_end: chunk.source_page_end ?? null,
       }
     }
 

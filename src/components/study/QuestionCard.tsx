@@ -18,9 +18,12 @@ interface AnswerResult {
   correct_answer: string | null
   explanation: string
   chunk?: {
+    id: string
     rule_text: string
     source_section: string
     key_terms: string[]
+    source_page_start: number | null
+    source_page_end: number | null
   } | null
 }
 
@@ -77,9 +80,37 @@ export default function QuestionCard({
   const [appealText, setAppealText] = useState('')
   const [appealSubmitting, setAppealSubmitting] = useState(false)
   const [appealDone, setAppealDone] = useState(false)
+  const [chunkModalOpen, setChunkModalOpen] = useState(false)
+  const [disputeText, setDisputeText] = useState('')
+  const [disputeSubmitting, setDisputeSubmitting] = useState(false)
+  const [disputeDone, setDisputeDone] = useState(false)
 
   const options = (question.options ?? []) as MCQOption[]
   const promptParagraphs = splitPrompt(question.prompt)
+
+  async function submitDispute(chunkId: string) {
+    if (!disputeText.trim()) return
+    setDisputeSubmitting(true)
+    try {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feedback_type: 'chunk_dispute',
+          description: disputeText.trim(),
+          knowledge_chunk_id: chunkId,
+        }),
+      })
+      setDisputeDone(true)
+      setTimeout(() => {
+        setChunkModalOpen(false)
+        setDisputeDone(false)
+        setDisputeText('')
+      }, 1800)
+    } finally {
+      setDisputeSubmitting(false)
+    }
+  }
 
   async function submitAppeal() {
     if (!appealText.trim()) return
@@ -343,6 +374,60 @@ export default function QuestionCard({
             </div>
           )}
 
+          {/* Source pills — what knowledge chunk this came from, and where to find it
+              in the source notes. Click either to open the full chunk + dispute it. */}
+          {result.chunk && (
+            <div
+              className="flex flex-wrap items-center gap-2"
+              style={{ marginBottom: 12, paddingBottom: 68 }}
+            >
+              <button
+                onClick={() => setChunkModalOpen(true)}
+                className="font-sans text-[12px] px-3 py-1.5 rounded-full transition hover:brightness-110"
+                style={{
+                  background: 'rgba(200,146,42,0.08)',
+                  border: '1px solid rgba(200,146,42,0.25)',
+                  color: 'var(--amber-text)',
+                  cursor: 'pointer',
+                  maxWidth: 280,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+                title="View the knowledge chunk this question was generated from"
+              >
+                <span style={{ flexShrink: 0 }}>📖</span>
+                <span
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {result.chunk.rule_text.slice(0, 44)}{result.chunk.rule_text.length > 44 ? '…' : ''}
+                </span>
+              </button>
+              {result.chunk.source_page_start && (
+                <button
+                  onClick={() => setChunkModalOpen(true)}
+                  className="font-sans text-[12px] px-3 py-1.5 rounded-full transition hover:brightness-110"
+                  style={{
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--surface-border)',
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                  }}
+                  title="The page in your source notes this rule came from — verify it yourself"
+                >
+                  📍 p.{result.chunk.source_page_start}
+                  {result.chunk.source_page_end && result.chunk.source_page_end !== result.chunk.source_page_start
+                    ? `–${result.chunk.source_page_end}`
+                    : ''}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Flag this question */}
           {result && (
             <div className="flex justify-end mt-2 mb-1">
@@ -367,53 +452,6 @@ export default function QuestionCard({
               >
                 ⚑ Flag issue
               </button>
-            </div>
-          )}
-
-          {/* Source rule citation */}
-          {result.chunk && (
-            <div
-              style={{
-                background: 'var(--surface-1)',
-                border: '1px solid var(--surface-border)',
-                borderLeft: '3px solid var(--amber)',
-                borderRadius: 10,
-                padding: '14px 18px',
-                paddingBottom: 80,
-              }}
-            >
-              <p
-                className="font-sans text-[10px] font-medium uppercase tracking-widest mb-2"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                This answer was determined from this knowledge chunk
-              </p>
-              <p
-                className="font-sans text-sm leading-relaxed mb-3"
-                style={{ color: 'var(--text-primary)', lineHeight: 1.7 }}
-              >
-                {result.chunk.rule_text}
-              </p>
-              {result.chunk.key_terms.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {result.chunk.key_terms.slice(0, 5).map(term => (
-                    <span
-                      key={term}
-                      className="font-sans text-[11px] px-2 py-0.5 rounded-full"
-                      style={{
-                        background: 'rgba(200,146,42,0.08)',
-                        border: '1px solid rgba(200,146,42,0.2)',
-                        color: 'var(--amber-text)',
-                      }}
-                    >
-                      {term}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <p className="font-sans text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                📍 Found in your source notes at: {result.chunk.source_section}
-              </p>
             </div>
           )}
         </div>
@@ -535,7 +573,8 @@ export default function QuestionCard({
 
                 <p className="font-sans text-xs mb-4" style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                   Use this if you believe the answer, explanation, or law stated is incorrect.
-                  Check the Source Rule first — if you disagree with the chunk, you can flag from there too.
+                  If the problem is with the underlying rule rather than this question, open the
+                  source pill below the explanation and dispute it from there instead.
                 </p>
 
                 <label className="block mb-4">
@@ -623,6 +662,149 @@ export default function QuestionCard({
                   </button>
                 </div>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Knowledge chunk modal — opened from either pill */}
+      {chunkModalOpen && result?.chunk && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(10,10,8,0.85)', backdropFilter: 'blur(4px)' }}
+          onClick={e => { if (e.target === e.currentTarget) setChunkModalOpen(false) }}
+        >
+          <div
+            style={{
+              background: 'var(--surface-2)',
+              border: '1px solid var(--surface-border)',
+              borderRadius: 14,
+              padding: 24,
+              width: '100%',
+              maxWidth: 480,
+              maxHeight: '85vh',
+              overflowY: 'auto',
+            }}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-serif text-xl" style={{ color: 'var(--text-primary)' }}>
+                Source knowledge chunk
+              </h2>
+              <button
+                onClick={() => setChunkModalOpen(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 20 }}
+              >
+                ×
+              </button>
+            </div>
+
+            <p
+              className="font-sans text-sm leading-relaxed mb-3"
+              style={{ color: 'var(--text-primary)', lineHeight: 1.7 }}
+            >
+              {result.chunk.rule_text}
+            </p>
+
+            {result.chunk.key_terms.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {result.chunk.key_terms.slice(0, 8).map(term => (
+                  <span
+                    key={term}
+                    className="font-sans text-[11px] px-2 py-0.5 rounded-full"
+                    style={{
+                      background: 'rgba(200,146,42,0.08)',
+                      border: '1px solid rgba(200,146,42,0.2)',
+                      color: 'var(--amber-text)',
+                    }}
+                  >
+                    {term}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <p className="font-sans text-[11px] mb-5" style={{ color: 'var(--text-muted)' }}>
+              📍 {result.chunk.source_section}
+              {result.chunk.source_page_start && (
+                <>
+                  {' '}· p.{result.chunk.source_page_start}
+                  {result.chunk.source_page_end && result.chunk.source_page_end !== result.chunk.source_page_start
+                    ? `–${result.chunk.source_page_end}`
+                    : ''}
+                  {' '}in your source notes — worth double-checking against the original.
+                </>
+              )}
+            </p>
+
+            {disputeDone ? (
+              <div className="text-center py-3" style={{ borderTop: '1px solid var(--surface-border)' }}>
+                <p className="font-serif text-lg mb-1" style={{ color: 'var(--status-correct)' }}>Flagged for review</p>
+                <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
+                  The admin will check this knowledge chunk.
+                </p>
+              </div>
+            ) : (
+              <div style={{ borderTop: '1px solid var(--surface-border)', paddingTop: 16 }}>
+                <label className="block mb-3">
+                  <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
+                    Think this rule is wrong, outdated, or doesn&apos;t match your notes? Say why and we&apos;ll review it.
+                  </span>
+                  <textarea
+                    value={disputeText}
+                    onChange={e => setDisputeText(e.target.value)}
+                    placeholder="What's wrong with this rule?"
+                    rows={3}
+                    style={{
+                      width: '100%',
+                      background: 'var(--surface-1)',
+                      border: '1px solid var(--surface-border)',
+                      borderRadius: 8,
+                      color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-dm-sans)',
+                      fontSize: 13,
+                      padding: '9px 12px',
+                      resize: 'vertical',
+                      outline: 'none',
+                    }}
+                  />
+                </label>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => submitDispute(result.chunk!.id)}
+                    disabled={disputeSubmitting || !disputeText.trim()}
+                    style={{
+                      flex: 1,
+                      background: 'var(--amber)',
+                      color: '#0A0A08',
+                      fontFamily: 'var(--font-dm-sans)',
+                      fontWeight: 600,
+                      fontSize: 14,
+                      padding: '10px 0',
+                      borderRadius: 8,
+                      border: 'none',
+                      cursor: disputeSubmitting || !disputeText.trim() ? 'not-allowed' : 'pointer',
+                      opacity: disputeSubmitting || !disputeText.trim() ? 0.5 : 1,
+                    }}
+                  >
+                    {disputeSubmitting ? 'Submitting…' : 'Dispute this chunk'}
+                  </button>
+                  <button
+                    onClick={() => setChunkModalOpen(false)}
+                    style={{
+                      background: 'transparent',
+                      color: 'var(--text-secondary)',
+                      fontFamily: 'var(--font-dm-sans)',
+                      fontSize: 14,
+                      padding: '10px 16px',
+                      borderRadius: 8,
+                      border: '1px solid var(--surface-border)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>

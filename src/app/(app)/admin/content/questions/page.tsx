@@ -60,8 +60,8 @@ export default async function AdminQuestionsPage() {
             },
             {
               step: '3',
-              label: 'Generate questions',
-              description: 'Turn approved chunks into MCQs',
+              label: 'Generate content',
+              description: 'Turn approved chunks into MCQs or flashcards',
               href: '/admin/content/generate',
               active: false,
             },
@@ -113,7 +113,7 @@ export default async function AdminQuestionsPage() {
             }}
           >
             <p className="font-sans text-sm" style={{ color: 'var(--amber-text)' }}>
-              {draftQ} draft question{draftQ !== 1 ? 's' : ''} waiting for your review — approve or archive them below.
+              {draftQ} draft item{draftQ !== 1 ? 's' : ''} (questions or flashcards) waiting for your review — approve or archive them below.
             </p>
             <Link
               href="/admin/content/generate"

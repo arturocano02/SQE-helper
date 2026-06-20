@@ -46,6 +46,8 @@ export default async function HomePage() {
     { data: incompleteSession },
     { data: completedSessions },
     { data: dueSrsEntries },
+    { data: approvedQuestions },
+    { data: answeredHistory },
   ] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
     supabase.from('topics').select('*').order('sort_order'),
@@ -72,6 +74,8 @@ export default async function HomePage() {
       .select('question_id')
       .eq('user_id', user.id)
       .lte('next_review_at', new Date().toISOString()),
+    supabase.from('questions').select('id, topic_id').eq('status', 'approved'),
+    supabase.from('question_history').select('question_id').eq('user_id', user.id),
   ])
 
   const topics = (topicsData ?? []) as Topic[]
@@ -96,8 +100,32 @@ export default async function HomePage() {
     }
   }
 
+  // Per-topic question counts + per-user answered counts
+  const questionCountByTopic = new Map<string, number>()
+  const topicByQuestionId = new Map<string, string>()
+  for (const q of approvedQuestions ?? []) {
+    if (!q.topic_id) continue
+    questionCountByTopic.set(q.topic_id, (questionCountByTopic.get(q.topic_id) ?? 0) + 1)
+    topicByQuestionId.set(q.id, q.topic_id)
+  }
+  const answeredQuestionIdsByTopic = new Map<string, Set<string>>()
+  for (const h of answeredHistory ?? []) {
+    if (!h.question_id) continue
+    const topicId = topicByQuestionId.get(h.question_id)
+    if (!topicId) continue
+    const set = answeredQuestionIdsByTopic.get(topicId) ?? new Set<string>()
+    set.add(h.question_id)
+    answeredQuestionIdsByTopic.set(topicId, set)
+  }
+
   const topicsWithMastery = topics
-    .map(t => ({ ...t, mastery: masteryMap.get(t.id), dueCount: dueTopicMap.get(t.id) ?? 0 }))
+    .map(t => ({
+      ...t,
+      mastery: masteryMap.get(t.id),
+      dueCount: dueTopicMap.get(t.id) ?? 0,
+      questionCount: questionCountByTopic.get(t.id) ?? 0,
+      answeredCount: answeredQuestionIdsByTopic.get(t.id)?.size ?? 0,
+    }))
     .sort((a, b) => (a.mastery?.mastery_score ?? 0) - (b.mastery?.mastery_score ?? 0))
 
   const suggested = topicsWithMastery.slice(0, 2)
@@ -335,6 +363,8 @@ export default async function HomePage() {
                   key={topic.id}
                   topic={topic}
                   mastery={topic.mastery}
+                  questionCount={topic.questionCount}
+                  answeredCount={topic.answeredCount}
                   actions={
                     <>
                       <QuickLaunchButton href={`/study/drill?topics=${topic.id}`} label="Drill" />
@@ -494,7 +524,12 @@ export default async function HomePage() {
             {topicsWithMastery.map(topic => (
               <div key={topic.id} className="relative">
                 <Link href={`/topics/${topic.slug}`}>
-                  <TopicCard topic={topic} mastery={topic.mastery} />
+                  <TopicCard
+                    topic={topic}
+                    mastery={topic.mastery}
+                    questionCount={topic.questionCount}
+                    answeredCount={topic.answeredCount}
+                  />
                 </Link>
                 {topic.dueCount > 0 && (
                   <span

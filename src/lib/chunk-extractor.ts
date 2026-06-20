@@ -45,9 +45,16 @@ export interface ExtractedChunk {
   key_terms: string[]
   rule_type: 'definition' | 'threshold' | 'test' | 'exception' | 'procedure' | 'consequence' | 'general_principle' | 'uncertain'
   source_section: string   // human-readable breadcrumb
+  source_page_start: number | null  // best-effort first page this rule appears on
+  source_page_end: number | null    // best-effort last page this rule appears on
   subtopic_name: string
   section_name: string
   topic_slug: string | null
+  // Populated only in "questions" mode — Claude's read on how hard the sample
+  // question this chunk came from actually is, and why. Feeds the per-topic
+  // question style guide and helps calibrate AI-generated question difficulty.
+  inferred_difficulty: 'easy' | 'medium' | 'hard' | null
+  difficulty_reason: string | null
 }
 
 // Mirrors the mapping in chunker.ts — kept in sync manually
@@ -86,7 +93,7 @@ function detectTopicSlug(path: string[]): string | null {
 }
 
 export interface ExtractionProgress {
-  stage: 'parsing' | 'sections_found' | 'extracting' | 'done' | 'error'
+  stage: 'parsing' | 'sections_found' | 'extracting' | 'batch_done' | 'done' | 'error'
   message: string
   sections_total?: number
   sections_done?: number
@@ -670,6 +677,17 @@ function buildSectionTreeFromBlocks(blocks: DocxBlock[], model: HeadingStyleMode
   return roots
 }
 
+/** Result of a single batched extraction call — may cover only part of the document. */
+export interface BatchExtractionResult {
+  chunks: ExtractedChunk[]
+  /** Total number of leaf sections (notes mode) or question batches (questions mode) in the whole document. */
+  totalUnits: number
+  /** How many units have now been processed, counting this call and everything before it. */
+  unitsDone: number
+  /** True once every unit in the document has been processed. */
+  done: boolean
+}
+
 /** Full Stage 1 entry point: docx buffer → section tree, with auto-discovered headings and page tracking. */
 export async function parseDocxToSections(buffer: Buffer): Promise<{ sections: DocSection[]; headingStyles: HeadingStyleSummary[] }> {
   const bodyXml = await readDocumentXmlBody(buffer)
@@ -929,9 +947,13 @@ async function extractChunksFromSection(
       key_terms:          meta.key_terms,
       rule_type:          meta.rule_type,
       source_section:     breadcrumb,
+      source_page_start:  section.firstPage,
+      source_page_end:    section.firstPage,
       subtopic_name:      subtopicName,
       section_name:       sectionName,
       topic_slug:         topicSlug,
+      inferred_difficulty: null,
+      difficulty_reason:  null,
     }
   })
 }
@@ -948,6 +970,14 @@ For each MCQ provided:
 1. Copy the CORRECT ANSWER and its explanation verbatim into "exact_source_quote"
 2. State the legal rule it tests precisely in "rule_text"
 3. Note the trap or misconception the question is designed to catch in "context_text"
+4. Judge how hard the question actually is to get right and explain why in "difficulty_reason"
+
+DIFFICULTY CALIBRATION — judge each question independently, do not default to "medium":
+- "easy": tests a single well-known rule directly, distractors are clearly wrong, no multi-step reasoning required
+- "medium": requires applying a rule to specific facts, or distinguishing between two genuinely plausible options
+- "hard": requires combining multiple rules, spotting an exception to a general rule, working through a multi-step calculation/timeline, or the wrong options are deliberately close to correct (e.g. right rule but wrong threshold/party/time limit)
+
+"difficulty_reason" must explain the SPECIFIC thing that makes it that difficulty — e.g. "Easy: directly recites the s.172 duty with no factual application needed" or "Hard: distractor B applies the correct test but to the wrong party, which only an attentive student would catch."
 
 STRICT RULES — do not break any of these:
 
@@ -974,7 +1004,9 @@ Return ONLY a JSON array. No explanation, no markdown fences.
     "key_terms": ["exact legal term as written in question"],
     "rule_type": "definition|threshold|test|exception|procedure|consequence|general_principle|uncertain",
     "subtopic_name": "Specific area (e.g. Directors' Duties)",
-    "section_name": "Specific aspect (e.g. s.172 Duty to promote success of the company)"
+    "section_name": "Specific aspect (e.g. s.172 Duty to promote success of the company)",
+    "inferred_difficulty": "easy|medium|hard",
+    "difficulty_reason": "The specific thing that makes this question that difficulty"
   }
 ]`
 
@@ -1033,19 +1065,35 @@ function splitIntoQuestionBatches(text: string): string[] {
   return chunks.length > 0 ? chunks : [text]  // always return at least something
 }
 
+// Sample-paper PDFs are extracted with a `[[PAGE:N]]` marker prepended before
+// each page's text (see /api/admin/upload's pagerender). This scans a batch
+// of question text for those markers, returns the min/max page number seen,
+// and strips the markers out before the text is sent to Claude — Claude never
+// needs to see them, but we keep the page range to attach to every chunk
+// extracted from this batch.
+function extractPageRange(text: string): { pageStart: number | null; pageEnd: number | null; cleaned: string } {
+  const matches = [...text.matchAll(/\[\[PAGE:(\d+)\]\]\n?/g)]
+  if (matches.length === 0) return { pageStart: null, pageEnd: null, cleaned: text }
+  const pages = matches.map(m => parseInt(m[1], 10))
+  const cleaned = text.replace(/\[\[PAGE:\d+\]\]\n?/g, '')
+  return { pageStart: Math.min(...pages), pageEnd: Math.max(...pages), cleaned }
+}
+
 async function extractChunksFromQuestionBatch(
   client: Anthropic,
   batch: string,
   batchIndex: number,
   topicHint: string,
 ): Promise<ExtractedChunk[]> {
+  const { pageStart, pageEnd, cleaned: cleanedBatch } = extractPageRange(batch)
+
   const message = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 16000,
     system: QUESTIONS_EXTRACTION_SYSTEM_PROMPT,
     messages: [{
       role: 'user',
-      content: `Topic context: ${topicHint}\nBatch ${batchIndex + 1}:\n\n${batch}`,
+      content: `Topic context: ${topicHint}\nBatch ${batchIndex + 1}:\n\n${cleanedBatch}`,
     }],
   })
 
@@ -1073,6 +1121,8 @@ async function extractChunksFromQuestionBatch(
     rule_type?: string
     subtopic_name?: string
     section_name?: string
+    inferred_difficulty?: string
+    difficulty_reason?: string
   }>
 
   try {
@@ -1094,9 +1144,15 @@ async function extractChunksFromQuestionBatch(
       key_terms: Array.isArray(c.key_terms) ? c.key_terms : [],
       rule_type: (c.rule_type as ExtractedChunk['rule_type']) ?? 'general_principle',
       source_section: `Sample Questions — ${topicHint} — Batch ${batchIndex + 1}`,
+      source_page_start: pageStart,
+      source_page_end: pageEnd,
       subtopic_name: c.subtopic_name ?? topicHint,
       section_name: c.section_name ?? `Batch ${batchIndex + 1}`,
       topic_slug: topicSlug,
+      inferred_difficulty: (['easy', 'medium', 'hard'].includes(c.inferred_difficulty ?? '')
+        ? c.inferred_difficulty
+        : null) as 'easy' | 'medium' | 'hard' | null,
+      difficulty_reason: c.difficulty_reason?.trim() || null,
     }))
 }
 
@@ -1110,11 +1166,15 @@ export async function extractChunksFromQuestions(
   topicName: string,
   onProgress: (p: ExtractionProgress) => void,
   onChunks?: (chunks: ExtractedChunk[]) => Promise<void>,
-): Promise<ExtractedChunk[]> {
+  range?: { offset: number; limit: number },
+  onUnitDone?: (absoluteIndex: number) => Promise<void>,
+): Promise<BatchExtractionResult> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
   onProgress({ stage: 'parsing', message: 'Splitting questions into batches…' })
 
+  // Deterministic given the same rawText — re-splitting on every call is cheap and
+  // guarantees offsets line up the same way across resumed batches.
   const batches = splitIntoQuestionBatches(rawText)
 
   if (batches.length === 0) {
@@ -1122,46 +1182,61 @@ export async function extractChunksFromQuestions(
     throw new Error('No question batches found')
   }
 
+  const offset = range?.offset ?? 0
+  const limit = range?.limit ?? batches.length
+  const batchSlice = batches.slice(offset, offset + limit)
+
   onProgress({
     stage: 'parsing',
     message: `Found ${batches.length} batches (~${QUESTIONS_PER_EXTRACTION_BATCH} questions each)`,
     sections_total: batches.length,
-    sections_done: 0,
+    sections_done: offset,
     chunks_found: 0,
   })
 
-  const allChunks: ExtractedChunk[] = []
+  const newChunks: ExtractedChunk[] = []
 
-  for (let i = 0; i < batches.length; i++) {
+  for (let i = 0; i < batchSlice.length; i++) {
+    const absoluteIndex = offset + i
     onProgress({
       stage: 'extracting',
-      message: `Extracting rules from batch ${i + 1} / ${batches.length}…`,
+      message: `Extracting rules from batch ${absoluteIndex + 1} / ${batches.length}…`,
       sections_total: batches.length,
-      sections_done: i,
-      chunks_found: allChunks.length,
+      sections_done: absoluteIndex,
+      chunks_found: newChunks.length,
     })
 
     try {
-      const chunks = await extractChunksFromQuestionBatch(client, batches[i], i, topicName)
-      allChunks.push(...chunks)
+      const chunks = await extractChunksFromQuestionBatch(client, batchSlice[i], absoluteIndex, topicName)
+      newChunks.push(...chunks)
       // Flush this batch's chunks immediately so partial progress survives a dropped connection
       if (onChunks && chunks.length > 0) {
         await onChunks(chunks)
       }
     } catch (err) {
-      console.error(`[chunk-extractor] Error on question batch ${i}:`, err)
+      console.error(`[chunk-extractor] Error on question batch ${absoluteIndex}:`, err)
+    }
+
+    // Persist the exact resume point right after this question-batch — same reasoning as notes mode.
+    if (onUnitDone) {
+      await onUnitDone(absoluteIndex + 1)
     }
   }
 
+  const unitsDone = Math.min(offset + batchSlice.length, batches.length)
+  const done = unitsDone >= batches.length
+
   onProgress({
-    stage: 'done',
-    message: `Done — ${allChunks.length} legal rules extracted from questions`,
+    stage: done ? 'done' : 'extracting',
+    message: done
+      ? `Done — ${unitsDone} batches processed`
+      : `Batch complete — ${unitsDone} / ${batches.length} question-batches processed so far`,
     sections_total: batches.length,
-    sections_done: batches.length,
-    chunks_found: allChunks.length,
+    sections_done: unitsDone,
+    chunks_found: newChunks.length,
   })
 
-  return allChunks
+  return { chunks: newChunks, totalUnits: batches.length, unitsDone, done }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1177,17 +1252,31 @@ export async function extractChunksFromQuestions(
  * @param onChunks   - optional callback invoked after each section completes, with that section's chunks.
  *                     Use this to persist chunks incrementally — if the connection drops mid-extraction,
  *                     everything flushed via onChunks is already saved.
- * @returns          - flat array of all extracted chunks (same data as delivered via onChunks)
+ * @param range      - optional { offset, limit } to process only a slice of the document's leaf
+ *                      sections. Used to run extraction in small resumable batches — each call
+ *                      processes at most `limit` sections starting at `offset`, so a single request
+ *                      never has to run long enough to risk a serverless timeout. The caller (the API
+ *                      route) tracks `offset` in the database and keeps calling until `done` is true.
+ * @param onUnitDone - optional callback invoked immediately after each individual section finishes
+ *                      (chunks already flushed via onChunks by that point), with the absolute index
+ *                      of the section just completed. Lets the caller persist exact resume position
+ *                      after every section, not just at the end of the batch — so even a mid-batch
+ *                      crash can only ever cause one section's chunks to be at risk of reprocessing.
+ * @returns          - batch result: this call's chunks plus total/done bookkeeping for resumability
  */
 export async function extractChunksFromDocx(
   buffer: Buffer,
   topicName: string,
   onProgress: (p: ExtractionProgress) => void,
   onChunks?: (chunks: ExtractedChunk[]) => Promise<void>,
-): Promise<ExtractedChunk[]> {
+  range?: { offset: number; limit: number },
+  onUnitDone?: (absoluteIndex: number) => Promise<void>,
+): Promise<BatchExtractionResult> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
   // ── Stage 1: Parse ──────────────────────────────────────────────────────────
+  // Re-parsed on every batch call — cheap (no AI calls), and guarantees the same
+  // deterministic leaf list every time so offsets always line up correctly.
   onProgress({ stage: 'parsing', message: 'Reading document structure and detecting its heading format…' })
 
   let tree: DocSection[]
@@ -1209,37 +1298,43 @@ export async function extractChunksFromDocx(
     throw new Error('No sections found')
   }
 
+  const offset = range?.offset ?? 0
+  const limit = range?.limit ?? leaves.length
+  const batchLeaves = leaves.slice(offset, offset + limit)
+
   // Emit section tree before extraction so the admin can verify all expected topics were found.
   // If a topic is missing here, the parser didn't detect it — check heading formatting in the docx.
+  // Only meaningful on the first batch, but harmless (and cheap) to re-send every time.
   const sectionPaths = leaves.map(l => l.path.join(' > ') || l.title)
   onProgress({
     stage: 'sections_found',
     message: `Found ${leaves.length} sections — verify all expected topics appear below before extraction starts`,
     sections_total: leaves.length,
-    sections_done: 0,
+    sections_done: offset,
     chunks_found: 0,
     sections_found: sectionPaths,
     heading_styles: headingStyles,
   })
 
-  // ── Stage 2: Extract ────────────────────────────────────────────────────────
-  const allChunks: ExtractedChunk[] = []
+  // ── Stage 2: Extract this batch only ────────────────────────────────────────
+  const batchChunks: ExtractedChunk[] = []
 
-  for (let i = 0; i < leaves.length; i++) {
-    const section = leaves[i]
+  for (let i = 0; i < batchLeaves.length; i++) {
+    const absoluteIndex = offset + i
+    const section = batchLeaves[i]
     const label = section.path.slice(-2).join(' > ') || section.title
 
     onProgress({
       stage: 'extracting',
       message: `Extracting: ${label}`,
       sections_total: leaves.length,
-      sections_done: i,
-      chunks_found: allChunks.length,
+      sections_done: absoluteIndex,
+      chunks_found: batchChunks.length,
     })
 
     try {
       const chunks = await extractChunksFromSection(client, section, topicName)
-      allChunks.push(...chunks)
+      batchChunks.push(...chunks)
       // Flush this section's chunks immediately so partial progress survives a dropped connection
       if (onChunks && chunks.length > 0) {
         await onChunks(chunks)
@@ -1248,15 +1343,26 @@ export async function extractChunksFromDocx(
       // Log but continue — don't fail the whole extraction for one section
       console.error(`[chunk-extractor] Error on section "${label}":`, err)
     }
+
+    // Persist the exact resume point right after this section, not at the end of the batch —
+    // this is what makes even a mid-batch crash only ever risk reprocessing one section.
+    if (onUnitDone) {
+      await onUnitDone(absoluteIndex + 1)
+    }
   }
 
+  const unitsDone = Math.min(offset + batchLeaves.length, leaves.length)
+  const done = unitsDone >= leaves.length
+
   onProgress({
-    stage: 'done',
-    message: `Extraction complete — ${allChunks.length} knowledge chunks found`,
+    stage: done ? 'done' : 'extracting',
+    message: done
+      ? `Extraction complete — ${unitsDone} sections processed`
+      : `Batch complete — ${unitsDone} / ${leaves.length} sections processed so far`,
     sections_total: leaves.length,
-    sections_done: leaves.length,
-    chunks_found: allChunks.length,
+    sections_done: unitsDone,
+    chunks_found: batchChunks.length,
   })
 
-  return allChunks
+  return { chunks: batchChunks, totalUnits: leaves.length, unitsDone, done }
 }

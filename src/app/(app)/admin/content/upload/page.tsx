@@ -31,7 +31,10 @@ interface UploadedFile {
 }
 
 interface ChunkExtractionState {
-  status: 'idle' | 'running' | 'done' | 'error'
+  // 'paused' = a batch stopped (network drop, or server reported a recoverable partial
+  // failure) but chunks saved so far are safe in the DB — clicking Resume just continues
+  // from the last checkpoint instead of restarting the whole document.
+  status: 'idle' | 'running' | 'done' | 'error' | 'paused'
   message: string
   sectionsTotal?: number
   sectionsDone?: number
@@ -112,28 +115,47 @@ export default function AdminUploadPage() {
     }
   }
 
-  async function extractChunks(fileName: string, sourceMaterialId: string) {
+  /**
+   * Runs ONE small batch (a handful of sections / question-groups) against
+   * /api/admin/chunks/extract and reports back what stage it ended on.
+   * The server persists progress after every individual unit inside the batch, so even if
+   * the fetch itself throws (dropped wifi, closed laptop lid) nothing already saved is lost —
+   * the caller just needs to call this again to resume from the checkpoint.
+   */
+  async function runOneBatch(fileName: string, sourceMaterialId: string): Promise<'done' | 'batch_done' | 'error'> {
     const topic = topics.find(t => t.id === chunkTopicId)
-    setChunkExtraction(prev => ({ ...prev, [fileName]: { status: 'running', message: 'Starting…' } }))
 
-    const res = await fetch('/api/admin/chunks/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source_material_id: sourceMaterialId,
-        extraction_mode: fileType,
-        ...(topic ? { topic_id: topic.id, topic_name: topic.name } : {}),
-      }),
-    })
+    let res: Response
+    try {
+      res = await fetch('/api/admin/chunks/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_material_id: sourceMaterialId,
+          extraction_mode: fileType,
+          ...(topic ? { topic_id: topic.id, topic_name: topic.name } : {}),
+        }),
+      })
+    } catch {
+      setChunkExtraction(prev => ({
+        ...prev,
+        [fileName]: { ...prev[fileName], status: 'paused', message: 'Connection lost — click Resume to continue from where it left off.' },
+      }))
+      return 'error'
+    }
 
     if (!res.ok || !res.body) {
-      setChunkExtraction(prev => ({ ...prev, [fileName]: { status: 'error', message: 'Request failed' } }))
-      return
+      setChunkExtraction(prev => ({
+        ...prev,
+        [fileName]: { ...prev[fileName], status: 'paused', message: 'Request failed — click Resume to continue from where it left off.' },
+      }))
+      return 'error'
     }
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
+    let finalStage: 'done' | 'batch_done' | 'error' = 'error'
 
     while (true) {
       const { done, value } = await reader.read()
@@ -145,17 +167,26 @@ export default function AdminUploadPage() {
         if (!line.startsWith('data: ')) continue
         try {
           const ev = JSON.parse(line.slice(6))
+          if (ev.stage === 'done' || ev.stage === 'batch_done' || ev.stage === 'error') {
+            finalStage = ev.stage
+          }
           setChunkExtraction(prev => {
             const existing = prev[fileName] ?? {}
+            // Treat batch_done the same as running in the UI — there's another batch coming
+            // right behind it, so the progress bar should read as continuous, not stop-start.
+            const chunksFoundSoFar = ev.chunks_found ?? existing.chunksFound
+            const partial = ev.stage === 'error' && (chunksFoundSoFar ?? 0) > 0
             return {
               ...prev,
               [fileName]: {
                 ...existing,
-                status: ev.stage === 'done' ? 'done' : ev.stage === 'error' ? 'error' : 'running',
+                status: ev.stage === 'done' ? 'done'
+                  : ev.stage === 'error' ? (partial ? 'paused' : 'error')
+                  : 'running',
                 message: ev.message ?? '',
                 sectionsTotal: ev.sections_total ?? existing.sectionsTotal,
                 sectionsDone: ev.sections_done ?? existing.sectionsDone,
-                chunksFound: ev.chunks_found ?? existing.chunksFound,
+                chunksFound: chunksFoundSoFar,
                 // Latch the section list once we receive it — don't overwrite with undefined later
                 sectionsFound: ev.sections_found ?? existing.sectionsFound,
                 headingStyles: ev.heading_styles ?? existing.headingStyles,
@@ -164,6 +195,26 @@ export default function AdminUploadPage() {
           })
         } catch { /* skip */ }
       }
+    }
+
+    return finalStage
+  }
+
+  /**
+   * Kicks off extraction, then keeps calling runOneBatch automatically as long as the
+   * server reports "batch_done" (more work left, just resumed by the next request).
+   * Stops on "done" or a genuine error — for a paused/partial error, the admin can hit
+   * Resume (same function) to pick up right where it stopped.
+   */
+  async function extractChunks(fileName: string, sourceMaterialId: string) {
+    setChunkExtraction(prev => ({
+      ...prev,
+      [fileName]: { ...(prev[fileName] ?? {}), status: 'running', message: 'Starting…' },
+    }))
+
+    let stage: 'done' | 'batch_done' | 'error' = 'batch_done'
+    while (stage === 'batch_done') {
+      stage = await runOneBatch(fileName, sourceMaterialId)
     }
   }
 
@@ -406,6 +457,7 @@ export default function AdminUploadPage() {
                     const isRunning = state?.status === 'running'
                     const isDone = state?.status === 'done'
                     const isError = state?.status === 'error'
+                    const isPaused = state?.status === 'paused'
                     const notStarted = !state
 
                     return (
@@ -444,6 +496,31 @@ export default function AdminUploadPage() {
                             <span className="font-sans text-xs shrink-0" style={{ color: 'var(--status-wrong)' }}>
                               Failed — {state.message}
                             </span>
+                          )}
+                          {isPaused && (
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-sans text-xs" style={{ color: 'var(--status-warning)' }}>
+                                Paused — {state.chunksFound ?? 0} chunks saved so far
+                              </span>
+                              <button
+                                onClick={() => extractChunks(f.file.name, f.source_material_id!)}
+                                style={{
+                                  background: 'var(--amber)',
+                                  color: '#0A0A08',
+                                  fontFamily: 'var(--font-dm-sans)',
+                                  fontWeight: 500,
+                                  fontSize: 12,
+                                  padding: '6px 14px',
+                                  borderRadius: 6,
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  whiteSpace: 'nowrap',
+                                }}
+                                className="hover:brightness-110 active:scale-[0.98] transition-all duration-150"
+                              >
+                                Resume →
+                              </button>
+                            </div>
                           )}
                           {isRunning && (
                             <span className="font-sans text-xs shrink-0" style={{ color: 'var(--amber-text)' }}>

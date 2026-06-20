@@ -160,7 +160,11 @@ async function generateQuestion(
   topicName: string,
   difficulty: Difficulty,
   styleExamples: string[],
+  styleGuide: string | null,
 ): Promise<GeneratedQ | null> {
+  const guideBlock = styleGuide
+    ? `\n\nQUESTION STYLE GUIDE for this topic (synthesised from real sample questions — follow this for tone, structure, and difficulty calibration):\n${styleGuide}`
+    : ''
   const styleBlock = styleExamples.length > 0
     ? `\n\nSTYLE REFERENCE (inspiration only — never copy verbatim):\n${styleExamples.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
     : ''
@@ -172,7 +176,7 @@ async function generateQuestion(
       system: GENERATE_SYSTEM_PROMPT,
       messages: [{
         role: 'user',
-        content: `Topic: ${topicName}\nDifficulty: ${difficulty}\n\nKnowledge chunk:\n${ruleText}${contextText ? `\n\nContext:\n${contextText}` : ''}${styleBlock}`,
+        content: `Topic: ${topicName}\nDifficulty: ${difficulty}\n\nKnowledge chunk:\n${ruleText}${contextText ? `\n\nContext:\n${contextText}` : ''}${guideBlock}${styleBlock}`,
       }],
     })
 
@@ -222,15 +226,16 @@ export async function POST(request: Request) {
   // Resolve topic metadata
   const { data: topicsData } = await admin
     .from('topics')
-    .select('id, name, slug')
+    .select('id, name, slug, question_style_guide')
     .in('id', topic_ids)
 
   if (!topicsData || topicsData.length === 0) {
     return NextResponse.json({ error: 'No topics found' }, { status: 404 })
   }
 
-  const topicMap = new Map(topicsData.map((t: { id: string; name: string; slug: string }) => [t.id, t]))
-  const slugToId = new Map(topicsData.map((t: { id: string; slug: string }) => [t.slug, t.id]))
+  type TopicRow = { id: string; name: string; slug: string; question_style_guide: string | null }
+  const topicMap = new Map(topicsData.map((t: TopicRow) => [t.id, t]))
+  const slugToId = new Map(topicsData.map((t: TopicRow) => [t.slug, t.id]))
 
   const encoder = new TextEncoder()
   const stream = new ReadableStream({
@@ -246,7 +251,7 @@ export async function POST(request: Request) {
 
       try {
         for (let topicIndex = 0; topicIndex < topicsData.length; topicIndex++) {
-          const topic = topicsData[topicIndex] as { id: string; name: string; slug: string }
+          const topic = topicsData[topicIndex] as TopicRow
 
           send({
             stage: 'topic',
@@ -348,7 +353,7 @@ export async function POST(request: Request) {
               continue
             }
 
-            const q = await generateQuestion(chunk.rule_text, chunk.context_text, topic.name, diff, styleExamples)
+            const q = await generateQuestion(chunk.rule_text, chunk.context_text, topic.name, diff, styleExamples, topic.question_style_guide)
             if (!q) continue
 
             const resolvedTopicId = slugToId.get(q.topic_slug) ?? topic.id

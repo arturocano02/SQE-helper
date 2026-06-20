@@ -5,6 +5,8 @@ import type { Topic, UserTopicMastery } from '@/types/database'
 import MasteryBar from '@/components/ui/MasteryBar'
 import Badge from '@/components/ui/Badge'
 import { masteryLabel, masteryGateMessage } from '@/lib/mastery'
+import OverallProgressBar from '@/components/ui/OverallProgressBar'
+import ScoreTrendChart from '@/components/ui/ScoreTrendChart'
 
 function getMasteryColor(score: number): string {
   if (score >= 70) return 'var(--status-correct)'
@@ -23,7 +25,7 @@ export default async function ProgressPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/sign-in')
 
-  const [{ data: topics }, { data: mastery }, { data: sessions }] = await Promise.all([
+  const [{ data: topics }, { data: mastery }, { data: sessions }, { data: trendSessions }] = await Promise.all([
     supabase.from('topics').select('*').order('sort_order'),
     supabase.from('user_topic_mastery').select('*').eq('user_id', user.id),
     supabase
@@ -33,6 +35,15 @@ export default async function ProgressPage() {
       .eq('is_complete', true)
       .order('started_at', { ascending: false })
       .limit(10),
+    // Separate ascending fetch — oldest first — so the trend chart reads left-to-right
+    // as "earlier" to "now", which is what makes an upward line feel motivating.
+    supabase
+      .from('sessions')
+      .select('correct_count, total_questions, started_at, is_complete')
+      .eq('user_id', user.id)
+      .eq('is_complete', true)
+      .order('started_at', { ascending: true })
+      .limit(30),
   ])
 
   const masteryMap = new Map(((mastery ?? []) as UserTopicMastery[]).map(m => [m.topic_id, m]))
@@ -51,6 +62,18 @@ export default async function ProgressPage() {
     : 0
 
   const topicsAt70 = topicsWithMastery.filter(t => (t.mastery?.mastery_score ?? 0) >= 70).length
+
+  // Overall expertise = average mastery across topics the user has actually engaged with.
+  // Falls back to the average session score if no topic has a mastery row yet (brand new user).
+  const engagedTopics = topicsWithMastery.filter(t => t.mastery)
+  const overallScore = engagedTopics.length
+    ? Math.round(engagedTopics.reduce((sum, t) => sum + (t.mastery?.mastery_score ?? 0), 0) / engagedTopics.length)
+    : avgScore
+
+  const trendPoints = (trendSessions ?? []).map(s => ({
+    date: new Date(s.started_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+    pct: s.total_questions > 0 ? Math.round((s.correct_count / s.total_questions) * 100) : 0,
+  }))
 
   return (
     <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
@@ -72,12 +95,38 @@ export default async function ProgressPage() {
       </header>
 
       <div className="max-w-3xl mx-auto px-5 py-10 space-y-10">
+        {/* Overall expertise milestone bar */}
+        <OverallProgressBar score={overallScore} />
+
         {/* Summary stat cards */}
         <div className="grid grid-cols-3 gap-4">
           <StatCard label="Sessions" value={totalSessions} />
           <StatCard label="Avg score" value={`${avgScore}%`} accent />
           <StatCard label="Topics ≥70%" value={topicsAt70} />
         </div>
+
+        {/* Score trend */}
+        {trendPoints.length > 0 && (
+          <section>
+            <h2
+              className="font-serif mb-5"
+              style={{ fontSize: '1.5rem', color: 'var(--text-primary)' }}
+            >
+              Score Trend
+            </h2>
+            <div
+              style={{
+                background: 'var(--surface-1)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 12,
+                padding: '20px 16px 12px',
+              }}
+              className="card-glow"
+            >
+              <ScoreTrendChart points={trendPoints} />
+            </div>
+          </section>
+        )}
 
         {/* Mastery by topic */}
         <section>

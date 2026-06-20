@@ -1,6 +1,7 @@
 'use client'
 
 import { Suspense, useState, useEffect } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Topic, UserTopicMastery, Difficulty } from '@/types/database'
@@ -95,6 +96,13 @@ function RecallLauncherInner() {
       <header style={{ borderBottom: '1px solid var(--surface-border)' }}>
         <div className="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between gap-4">
           <div>
+            <Link
+              href="/home"
+              className="font-sans text-sm transition inline-block mb-2"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              ← Dashboard
+            </Link>
             <h1 className="font-serif text-2xl" style={{ color: 'var(--text-primary)' }}>Active Recall</h1>
             <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
               Quick rule-recall flashcards

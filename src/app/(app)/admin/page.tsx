@@ -34,10 +34,11 @@ export default async function AdminDashboardPage() {
       .limit(100),
   ])
 
-  const [{ count: totalChunks }, { count: approvedChunks }, { count: pendingFeedback }] = await Promise.all([
+  const [{ count: totalChunks }, { count: approvedChunks }, { count: pendingFeedback }, { count: pendingContentRequests }] = await Promise.all([
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }),
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }).eq('is_approved', true),
     admin.from('feedback').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+    admin.from('content_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
   ])
 
   const { data: qPerTopic } = await admin
@@ -48,6 +49,18 @@ export default async function AdminDashboardPage() {
   const topicQMap = new Map<string, number>()
   ;(qPerTopic ?? []).forEach((q: { topic_id: string | null }) => {
     if (q.topic_id) topicQMap.set(q.topic_id, (topicQMap.get(q.topic_id) ?? 0) + 1)
+  })
+
+  // Aggregate (all-users) answered count per topic — how much of the bank has actually been used.
+  const { data: answersWithTopic } = await admin
+    .from('question_history')
+    .select('questions!inner(topic_id)')
+    .limit(20000)
+  const topicAnsweredMap = new Map<string, number>()
+  ;(answersWithTopic ?? []).forEach((row: { questions: { topic_id: string | null } | { topic_id: string | null }[] }) => {
+    const q = Array.isArray(row.questions) ? row.questions[0] : row.questions
+    const topicId = q?.topic_id
+    if (topicId) topicAnsweredMap.set(topicId, (topicAnsweredMap.get(topicId) ?? 0) + 1)
   })
 
   const recent = (recentActivity ?? []) as Array<{ was_correct: boolean }>
@@ -112,6 +125,40 @@ export default async function AdminDashboardPage() {
                 justifyContent: 'center',
               }}>{pendingFeedback}</span>
               Feedback
+            </Link>
+          )}
+          {(pendingContentRequests ?? 0) > 0 && (
+            <Link
+              href="/admin/content-requests"
+              style={{
+                background: 'rgba(200,146,42,0.12)',
+                color: 'var(--amber-text)',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 500,
+                fontSize: 13,
+                padding: '8px 16px',
+                borderRadius: 8,
+                border: '1px solid rgba(200,146,42,0.30)',
+                transition: 'all 150ms ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+              className="hover:brightness-110"
+            >
+              <span style={{
+                background: 'var(--amber)',
+                color: '#0A0A08',
+                borderRadius: '50%',
+                width: 18,
+                height: 18,
+                fontSize: 11,
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>{pendingContentRequests}</span>
+              Content Requests
             </Link>
           )}
           <Link
@@ -186,7 +233,7 @@ export default async function AdminDashboardPage() {
               }}
               className="hover:brightness-110 transition"
             >
-              ✦ Generate questions from chunks →
+              ✦ Generate questions or flashcards from chunks →
             </Link>
           )}
         </section>
@@ -226,6 +273,7 @@ export default async function AdminDashboardPage() {
                 const count = topicQMap.get(t.id) ?? 0
                 const maxCount = Math.max(...Array.from(topicQMap.values()), 1)
                 const pct = Math.round((count / maxCount) * 100)
+                const answered = topicAnsweredMap.get(t.id) ?? 0
                 return (
                   <div
                     key={t.id}
@@ -263,6 +311,13 @@ export default async function AdminDashboardPage() {
                       style={{ color: 'var(--text-secondary)', width: 28, textAlign: 'right', flexShrink: 0 }}
                     >
                       {count}
+                    </span>
+                    <span
+                      className="font-mono text-[11px] tabular-nums shrink-0"
+                      style={{ color: 'var(--text-muted)', width: 90, textAlign: 'right' }}
+                      title="Total answers given by all users for this topic"
+                    >
+                      {answered} answered
                     </span>
                     <Link
                       href="/admin/content/questions"

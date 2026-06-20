@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import SignOutButton from '../profile/SignOutButton'
-import { AdminIcon, UploadIcon, QuestionIcon } from '@/components/ui/Icon'
+import { AdminIcon, UploadIcon, QuestionIcon, RecallIcon } from '@/components/ui/Icon'
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -51,6 +51,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <nav className="flex items-center gap-0.5">
               <AdminNavLink href="/admin" icon={<AdminIcon size={14} />} label="Dashboard" />
               <AdminNavLink href="/admin/content/upload" icon={<UploadIcon size={14} />} label="Upload" />
+              <AdminNavLink href="/admin/content/generate" icon={<RecallIcon size={14} />} label="Generate" />
               <AdminNavLink href="/admin/content/questions" icon={<QuestionIcon size={14} />} label="Questions" />
             </nav>
           </div>

@@ -15,21 +15,35 @@ export type FeedbackType =
   | 'poor_explanation'
   | 'outdated_law'
   | 'misleading_question'
+  // Knowledge-chunk specific
+  | 'chunk_dispute'
   // App-level
   | 'bug'
   | 'feature_request'
   | 'content_request'
   | 'other'
 export type FeedbackStatus = 'pending' | 'reviewed' | 'actioned' | 'dismissed'
+export type ContentRequestStatus = 'pending' | 'done' | 'dismissed'
 
 export interface Feedback {
   id: string
   user_id: string | null
   question_id: string | null
+  knowledge_chunk_id: string | null
   feedback_type: FeedbackType
   description: string
   status: FeedbackStatus
   admin_note: string | null
+  created_at: string
+}
+
+export interface ContentRequest {
+  id: string
+  user_id: string | null
+  topic_id: string | null
+  content_type: QuestionType
+  note: string | null
+  status: ContentRequestStatus
   created_at: string
 }
 
@@ -45,6 +59,8 @@ export interface Topic {
   slug: string
   sort_order: number
   created_at: string
+  question_style_guide: string | null
+  style_guide_updated_at: string | null
 }
 
 export interface Profile {
@@ -75,9 +91,14 @@ export interface KnowledgeChunk {
   exact_source_quote: string | null
   context_text: string | null
   source_section: string | null
+  source_page_start: number | null
+  source_page_end: number | null
   key_terms: string[]
   rule_type: RuleType
   is_approved: boolean
+  needs_review: boolean
+  inferred_difficulty: Difficulty | null
+  difficulty_reason: string | null
   sort_order: number
   created_at: string
   updated_at: string
@@ -194,6 +215,7 @@ export interface SourceMaterial {
   chunk_status: ChunkExtractionStatus
   chunks_extracted: number
   chunk_error: string | null
+  file_hash: string | null
 }
 
 // Joined / enriched types

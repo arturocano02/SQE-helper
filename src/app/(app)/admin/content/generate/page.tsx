@@ -53,12 +53,75 @@ export default function AdminGeneratePage() {
   const [done, setDone] = useState(false)
   const logEndRef = useRef<HTMLDivElement>(null)
 
+  const [guideText, setGuideText] = useState('')
+  const [guideUpdatedAt, setGuideUpdatedAt] = useState<string | null>(null)
+  const [loadingGuide, setLoadingGuide] = useState(false)
+  const [savingGuide, setSavingGuide] = useState(false)
+  const [regeneratingGuide, setRegeneratingGuide] = useState(false)
+  const [guideError, setGuideError] = useState<string | null>(null)
+
   useEffect(() => {
     fetch('/api/admin/topics')
       .then(r => r.json())
       .then(data => setTopics(data.topics ?? []))
       .finally(() => setLoadingTopics(false))
   }, [])
+
+  const soleSelectedTopicId = selectedTopicIds.size === 1 ? Array.from(selectedTopicIds)[0] : null
+
+  useEffect(() => {
+    setGuideError(null)
+    if (!soleSelectedTopicId) {
+      setGuideText('')
+      setGuideUpdatedAt(null)
+      return
+    }
+    setLoadingGuide(true)
+    fetch(`/api/admin/style-guide?topic_id=${soleSelectedTopicId}`)
+      .then(r => r.json())
+      .then(data => {
+        setGuideText(data.question_style_guide ?? '')
+        setGuideUpdatedAt(data.style_guide_updated_at ?? null)
+      })
+      .finally(() => setLoadingGuide(false))
+  }, [soleSelectedTopicId])
+
+  async function saveGuide() {
+    if (!soleSelectedTopicId) return
+    setSavingGuide(true)
+    setGuideError(null)
+    try {
+      await fetch('/api/admin/style-guide', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic_id: soleSelectedTopicId, question_style_guide: guideText }),
+      })
+    } finally {
+      setSavingGuide(false)
+    }
+  }
+
+  async function regenerateGuide() {
+    if (!soleSelectedTopicId) return
+    setRegeneratingGuide(true)
+    setGuideError(null)
+    try {
+      const res = await fetch('/api/admin/style-guide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic_id: soleSelectedTopicId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setGuideError(data.error ?? 'Failed to generate style guide')
+      } else {
+        setGuideText(data.question_style_guide ?? '')
+        setGuideUpdatedAt(data.style_guide_updated_at ?? null)
+      }
+    } finally {
+      setRegeneratingGuide(false)
+    }
+  }
 
   // Auto-scroll log
   useEffect(() => {
@@ -263,6 +326,94 @@ export default function AdminGeneratePage() {
               </div>
             )}
           </section>
+
+          {/* Question style guide — per topic, only when exactly one topic is selected */}
+          {soleSelectedTopicId && (
+            <section
+              style={{
+                background: 'var(--surface-1)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 14,
+                padding: 24,
+              }}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="font-serif text-lg" style={{ color: 'var(--text-primary)' }}>
+                  Question Style Guide
+                </h2>
+                <button
+                  onClick={regenerateGuide}
+                  disabled={regeneratingGuide}
+                  className="font-sans text-xs px-3 py-1.5 rounded transition"
+                  style={{
+                    background: 'var(--accent-dim)',
+                    color: 'var(--amber-text)',
+                    border: '1px solid rgba(200,146,42,0.35)',
+                    cursor: regeneratingGuide ? 'not-allowed' : 'pointer',
+                    opacity: regeneratingGuide ? 0.6 : 1,
+                  }}
+                >
+                  {regeneratingGuide ? 'Synthesising…' : 'Regenerate from sample questions →'}
+                </button>
+              </div>
+              <p className="font-sans text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                Synthesised from sample-question chunks with inferred difficulty for this topic. Used as a reference
+                when generating new questions below. Editable — your edits are saved as-is until regenerated.
+                {guideUpdatedAt && (
+                  <> Last updated {new Date(guideUpdatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.</>
+                )}
+              </p>
+
+              {guideError && (
+                <p className="font-sans text-xs mb-3" style={{ color: 'var(--status-wrong)' }}>
+                  {guideError}
+                </p>
+              )}
+
+              {loadingGuide ? (
+                <p className="font-sans text-sm" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+              ) : (
+                <>
+                  <textarea
+                    value={guideText}
+                    onChange={e => setGuideText(e.target.value)}
+                    placeholder="No style guide yet — click “Regenerate from sample questions” to synthesise one from this topic's sample-question chunks, or write one manually."
+                    rows={8}
+                    style={{
+                      width: '100%',
+                      background: 'var(--surface-2)',
+                      border: '1px solid var(--surface-border)',
+                      borderRadius: 8,
+                      color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-dm-sans)',
+                      fontSize: 13,
+                      padding: '10px 12px',
+                      resize: 'vertical',
+                      outline: 'none',
+                      lineHeight: 1.5,
+                    }}
+                  />
+                  <div className="flex justify-end mt-3">
+                    <button
+                      onClick={saveGuide}
+                      disabled={savingGuide}
+                      className="font-sans text-xs px-4 py-1.5 rounded transition"
+                      style={{
+                        background: 'var(--amber)',
+                        color: '#0A0A08',
+                        border: 'none',
+                        fontWeight: 600,
+                        cursor: savingGuide ? 'not-allowed' : 'pointer',
+                        opacity: savingGuide ? 0.6 : 1,
+                      }}
+                    >
+                      {savingGuide ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
 
           {/* Config */}
           <section

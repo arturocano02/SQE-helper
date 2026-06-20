@@ -16,12 +16,48 @@
 
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { createHash } from 'crypto'
 
 interface FileResult {
   file: string
   source_material_id: string | null
   chars_extracted: number
   error: string | null
+  reused_existing: boolean
+}
+
+function hashFile(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex')
+}
+
+// PDF text extraction with embedded page markers.
+// We replicate pdf-parse's default render_page() line-joining logic exactly
+// (Y-coordinate based) so extraction quality is unchanged — the only addition
+// is a `[[PAGE:N]]` marker prepended before each page's text, which the
+// chunk extractor scans for and strips before sending anything to Claude.
+// This is what makes page-range tracking possible in "sample papers" mode,
+// where no page info existed before.
+function renderPageWithMarker(pageData: {
+  pageNumber: number
+  getTextContent: (options?: unknown) => Promise<{ items: Array<{ str: string; transform: number[] }> }>
+}): Promise<string> {
+  const renderOptions = {
+    normalizeWhitespace: false,
+    disableCombineTextItems: false,
+  }
+  return pageData.getTextContent(renderOptions as never).then(textContent => {
+    let lastY: number | null = null
+    let text = ''
+    for (const item of textContent.items) {
+      if (lastY === null || lastY === item.transform[5]) {
+        text += item.str
+      } else {
+        text += `\n${item.str}`
+      }
+      lastY = item.transform[5]
+    }
+    return `[[PAGE:${pageData.pageNumber}]]\n${text}`
+  })
 }
 
 async function extractText(buffer: Buffer, ext: string): Promise<string> {
@@ -32,8 +68,11 @@ async function extractText(buffer: Buffer, ext: string): Promise<string> {
   }
   if (ext === 'pdf') {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>
-    return (await pdfParse(buffer)).text
+    const pdfParse = require('pdf-parse') as (
+      buf: Buffer,
+      opts: { pagerender: typeof renderPageWithMarker }
+    ) => Promise<{ text: string }>
+    return (await pdfParse(buffer, { pagerender: renderPageWithMarker })).text
   }
   throw new Error(`Unsupported file type: .${ext}`)
 }
@@ -61,6 +100,32 @@ export async function POST(request: Request) {
     const fileName = file.name
     const ext = fileName.toLowerCase().split('.').pop() ?? ''
     const fileBytes = Buffer.from(await file.arrayBuffer())
+    const fileHash = hashFile(fileBytes)
+
+    // Dedup: if the exact same file content was already uploaded and
+    // extracted successfully, reuse that row instead of creating a duplicate.
+    // This is what lets a 190-page document be re-uploaded safely — extraction
+    // resume picks up from where it left off on the SAME source_material_id
+    // rather than starting over (or worse, duplicating chunks).
+    const { data: existing } = await admin
+      .from('source_materials')
+      .select('id, status, raw_text')
+      .eq('file_hash', fileHash)
+      .eq('status', 'done')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (existing) {
+      results.push({
+        file: fileName,
+        source_material_id: existing.id,
+        chars_extracted: existing.raw_text?.length ?? 0,
+        error: null,
+        reused_existing: true,
+      })
+      continue
+    }
 
     // Upload file to storage (upsert — overwrite if re-uploading)
     await admin.storage
@@ -85,6 +150,7 @@ export async function POST(request: Request) {
       .insert({
         file_name: fileName,
         file_type: ext,
+        file_hash: fileHash,
         raw_text: rawText || null,
         status: extractError ? 'failed' : 'done',
         error_message: extractError,
@@ -98,6 +164,7 @@ export async function POST(request: Request) {
       source_material_id: sm?.id ?? null,
       chars_extracted: rawText.length,
       error: extractError ?? (dbErr ? dbErr.message : null),
+      reused_existing: false,
     })
   }
 

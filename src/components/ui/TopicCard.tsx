@@ -12,6 +12,10 @@ interface TopicCardProps {
   onClick?: () => void
   actions?: React.ReactNode
   className?: string
+  /** Total approved questions available in this topic. */
+  questionCount?: number
+  /** How many distinct questions in this topic the user has answered at least once. */
+  answeredCount?: number
 }
 
 function formatLastVisited(dateStr: string | null | undefined): string {
@@ -38,7 +42,7 @@ function getMasteryPillClass(score: number, hasMastery: boolean): string {
   return 'pill-wrong'
 }
 
-export default function TopicCard({ topic, mastery, selected, onClick, actions, className = '' }: TopicCardProps) {
+export default function TopicCard({ topic, mastery, selected, onClick, actions, className = '', questionCount, answeredCount }: TopicCardProps) {
   const score = mastery?.mastery_score ?? 0
   const hasMastery = !!mastery
   const borderColor = getMasteryBorderColor(score, hasMastery)
@@ -91,9 +95,16 @@ export default function TopicCard({ topic, mastery, selected, onClick, actions, 
       </div>
 
       <MasteryBar score={score} className="mb-1.5" />
-      <p className="text-[11px] font-sans" style={{ color: 'var(--text-secondary)' }}>
-        {masteryLabel(score)}
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-sans" style={{ color: 'var(--text-secondary)' }}>
+          {masteryLabel(score)}
+        </p>
+        {typeof questionCount === 'number' && (
+          <p className="text-[11px] font-mono shrink-0" style={{ color: 'var(--text-muted)' }}>
+            {answeredCount ?? 0}/{questionCount} answered
+          </p>
+        )}
+      </div>
 
       {actions && (
         <div

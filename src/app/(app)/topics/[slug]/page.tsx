@@ -5,6 +5,8 @@ import type { Topic, UserTopicMastery, Confidence } from '@/types/database'
 import MasteryBar from '@/components/ui/MasteryBar'
 import Badge from '@/components/ui/Badge'
 import { masteryLabel, masteryFromConfidence } from '@/lib/mastery'
+import MasteryLevelUp from '@/components/study/MasteryLevelUp'
+import RequestContentButton from '@/components/study/RequestContentButton'
 
 function getMasteryColor(score: number): string {
   if (score >= 70) return 'var(--status-correct)'
@@ -217,6 +219,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
 
   return (
     <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
+      {hasMastery && <MasteryLevelUp topicId={t.id} label={masteryLabel(score)} />}
       <header style={{ borderBottom: '1px solid var(--surface-border)' }}>
         <div className="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between">
           <Link href="/home" className="font-sans text-sm transition" style={{ color: 'var(--text-secondary)' }}>
@@ -339,6 +342,10 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ sl
               Quick rule memorisation
             </p>
           </Link>
+        </div>
+
+        <div className="flex justify-end">
+          <RequestContentButton topicId={t.id} topicName={t.name} />
         </div>
 
         {/* Difficulty breakdown */}

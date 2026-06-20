@@ -70,7 +70,7 @@ export default function ChunksPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [selectedTopicId, setSelectedTopicId] = useState<string>('')
-  const [filterApproved, setFilterApproved] = useState<'all' | 'approved' | 'pending'>('all')
+  const [filterApproved, setFilterApproved] = useState<'all' | 'approved' | 'pending' | 'review'>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('tree')
   const [editing, setEditing] = useState<ChunkRow | null>(null)
   const [saving, setSaving] = useState(false)
@@ -98,6 +98,7 @@ export default function ChunksPage() {
     if (selectedTopicId) params.set('topic_id', selectedTopicId)
     if (filterApproved === 'approved') params.set('is_approved', 'true')
     if (filterApproved === 'pending') params.set('is_approved', 'false')
+    if (filterApproved === 'review') params.set('needs_review', 'true')
 
     const res = await fetch(`/api/admin/chunks?${params}`)
     const data = await res.json()
@@ -123,6 +124,9 @@ export default function ChunksPage() {
         key_terms: editing.key_terms,
         rule_type: editing.rule_type,
         is_approved: editing.is_approved,
+        needs_review: editing.needs_review,
+        inferred_difficulty: editing.inferred_difficulty,
+        difficulty_reason: editing.difficulty_reason,
       }),
     })
     setSaving(false)
@@ -229,6 +233,7 @@ export default function ChunksPage() {
 
   const approvedCount = chunks.filter(c => c.is_approved).length
   const pendingCount = chunks.length - approvedCount
+  const reviewCount = chunks.filter(c => c.needs_review).length
 
   // Filter by search
   const filteredChunks = search.trim()
@@ -258,6 +263,7 @@ export default function ChunksPage() {
             <Pill label={`${total} total`} />
             <Pill label={`${approvedCount} approved`} color="green" />
             {pendingCount > 0 && <Pill label={`${pendingCount} pending`} color="amber" />}
+            {reviewCount > 0 && <Pill label={`⚠ ${reviewCount} flagged for review`} color="red" />}
           </div>
 
           <div className="ml-auto flex items-center gap-2">
@@ -342,7 +348,7 @@ export default function ChunksPage() {
             {topics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
 
-          {(['all', 'approved', 'pending'] as const).map(f => (
+          {(['all', 'approved', 'pending', 'review'] as const).map(f => (
             <button
               key={f}
               onClick={() => { setFilterApproved(f); setPage(1) }}
@@ -351,14 +357,20 @@ export default function ChunksPage() {
                 borderRadius: 20,
                 fontFamily: 'var(--font-dm-sans)',
                 fontSize: 12,
-                border: filterApproved === f ? '1px solid rgba(200,146,42,0.5)' : '1px solid var(--surface-border)',
-                background: filterApproved === f ? 'var(--amber-soft)' : 'var(--surface-1)',
-                color: filterApproved === f ? 'var(--amber-text)' : 'var(--text-secondary)',
+                border: filterApproved === f
+                  ? (f === 'review' ? '1px solid rgba(248,113,113,0.5)' : '1px solid rgba(200,146,42,0.5)')
+                  : '1px solid var(--surface-border)',
+                background: filterApproved === f
+                  ? (f === 'review' ? 'rgba(248,113,113,0.1)' : 'var(--amber-soft)')
+                  : 'var(--surface-1)',
+                color: filterApproved === f
+                  ? (f === 'review' ? 'var(--status-wrong)' : 'var(--amber-text)')
+                  : 'var(--text-secondary)',
                 cursor: 'pointer',
                 textTransform: 'capitalize',
               }}
             >
-              {f === 'all' ? 'All' : f === 'approved' ? '✓ Approved' : '⏳ Pending'}
+              {f === 'all' ? 'All' : f === 'approved' ? '✓ Approved' : f === 'pending' ? '⏳ Pending' : '⚠ Flagged'}
             </button>
           ))}
 
@@ -669,18 +681,38 @@ export default function ChunksPage() {
               overflowY: 'auto',
             }}
           >
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
               <h3 className="font-serif text-xl" style={{ color: 'var(--text-primary)' }}>Edit Chunk</h3>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>Approved</span>
-                <input
-                  type="checkbox"
-                  checked={editing.is_approved}
-                  onChange={e => setEditing({ ...editing, is_approved: e.target.checked })}
-                  style={{ accentColor: 'var(--status-correct)', width: 16, height: 16 }}
-                />
-              </label>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="font-sans text-xs" style={{ color: 'var(--status-wrong)' }}>Needs review</span>
+                  <input
+                    type="checkbox"
+                    checked={editing.needs_review}
+                    onChange={e => setEditing({ ...editing, needs_review: e.target.checked })}
+                    style={{ accentColor: 'var(--status-wrong)', width: 16, height: 16 }}
+                  />
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>Approved</span>
+                  <input
+                    type="checkbox"
+                    checked={editing.is_approved}
+                    onChange={e => setEditing({ ...editing, is_approved: e.target.checked })}
+                    style={{ accentColor: 'var(--status-correct)', width: 16, height: 16 }}
+                  />
+                </label>
+              </div>
             </div>
+
+            {editing.needs_review && (
+              <div
+                className="mb-4 p-3 rounded font-sans text-xs"
+                style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.3)', color: 'var(--status-wrong)' }}
+              >
+                A user disputed this chunk. Check the feedback log for details, then fix the rule text and untick &ldquo;Needs review&rdquo; once resolved.
+              </div>
+            )}
 
             <label className="block mb-4">
               <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>Rule text *</span>
@@ -752,6 +784,39 @@ export default function ChunksPage() {
                 {RULE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </label>
+
+            {(editing.exact_source_quote || editing.inferred_difficulty || editing.difficulty_reason) && (
+              <>
+                <label className="block mb-4">
+                  <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
+                    Inferred difficulty (from sample question)
+                  </span>
+                  <select
+                    value={editing.inferred_difficulty ?? ''}
+                    onChange={e => setEditing({ ...editing, inferred_difficulty: (e.target.value || null) as KnowledgeChunk['inferred_difficulty'] })}
+                    style={inputStyle}
+                  >
+                    <option value="">Not set</option>
+                    <option value="easy">easy</option>
+                    <option value="medium">medium</option>
+                    <option value="hard">hard</option>
+                  </select>
+                </label>
+
+                <label className="block mb-6">
+                  <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
+                    Why this difficulty
+                  </span>
+                  <textarea
+                    rows={2}
+                    value={editing.difficulty_reason ?? ''}
+                    onChange={e => setEditing({ ...editing, difficulty_reason: e.target.value })}
+                    placeholder="What specifically makes this easy/medium/hard…"
+                    style={textareaStyle}
+                  />
+                </label>
+              </>
+            )}
 
             <div className="flex gap-3">
               <button onClick={saveEdit} disabled={saving} style={primaryBtnStyle(saving)}>
@@ -1000,6 +1065,29 @@ function ChunkListRow({
           >
             {chunk.rule_type === 'uncertain' ? '⚠ uncertain' : chunk.rule_type}
           </span>
+          {chunk.needs_review && (
+            <span
+              className="font-sans text-[10px] px-1.5 py-0.5 rounded font-medium"
+              style={{
+                color: 'var(--status-wrong)',
+                background: 'rgba(248,113,113,0.12)',
+                border: '1px solid rgba(248,113,113,0.4)',
+              }}
+            >
+              ⚠ flagged for review
+            </span>
+          )}
+          {chunk.inferred_difficulty && (
+            <span
+              className="font-sans text-[10px] px-1.5 py-0.5 rounded"
+              style={{
+                color: chunk.inferred_difficulty === 'hard' ? 'var(--status-wrong)' : chunk.inferred_difficulty === 'medium' ? 'var(--status-warning)' : 'var(--status-correct)',
+                border: '1px solid var(--surface-border)',
+              }}
+            >
+              {chunk.inferred_difficulty}
+            </span>
+          )}
           {chunk.key_terms?.slice(0, 4).map(t => (
             <span
               key={t}
@@ -1024,6 +1112,12 @@ function ChunkListRow({
         {chunk.source_section && (
           <p className="font-sans text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
             {chunk.source_section}
+          </p>
+        )}
+
+        {chunk.difficulty_reason && (
+          <p className="font-sans text-[11px] mt-1 italic" style={{ color: 'var(--text-muted)' }}>
+            Why {chunk.inferred_difficulty}: {chunk.difficulty_reason}
           </p>
         )}
 
@@ -1093,9 +1187,9 @@ function ActionBtn({ onClick, label, color }: { onClick: () => void; label: stri
   )
 }
 
-function Pill({ label, color }: { label: string; color?: 'green' | 'amber' }) {
-  const bg = color === 'green' ? 'rgba(74,222,128,0.08)' : color === 'amber' ? 'rgba(200,146,42,0.1)' : 'var(--surface-2)'
-  const text = color === 'green' ? 'var(--status-correct)' : color === 'amber' ? 'var(--amber-text)' : 'var(--text-muted)'
+function Pill({ label, color }: { label: string; color?: 'green' | 'amber' | 'red' }) {
+  const bg = color === 'green' ? 'rgba(74,222,128,0.08)' : color === 'amber' ? 'rgba(200,146,42,0.1)' : color === 'red' ? 'rgba(248,113,113,0.1)' : 'var(--surface-2)'
+  const text = color === 'green' ? 'var(--status-correct)' : color === 'amber' ? 'var(--amber-text)' : color === 'red' ? 'var(--status-wrong)' : 'var(--text-muted)'
   return (
     <span
       className="font-mono text-xs px-2 py-0.5 rounded"

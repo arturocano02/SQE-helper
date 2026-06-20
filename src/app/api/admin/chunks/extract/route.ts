@@ -17,6 +17,21 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { extractChunksFromDocx, extractChunksFromQuestions } from '@/lib/chunk-extractor'
 import type { ExtractionProgress } from '@/lib/chunk-extractor'
 
+// Each request only processes one small batch of sections/question-batches, so it always
+// finishes well within Vercel's function timeout. The client calls this endpoint repeatedly
+// (see admin upload page) until it reports stage: "done".
+export const maxDuration = 60
+
+// Batch sizes are deliberately small — a handful of Claude calls per request — so a single
+// dropped connection can only ever cost re-running one small batch, never the whole document.
+const NOTES_BATCH_SIZE = 8
+const QUESTIONS_BATCH_SIZE = 3
+
+// If a record has been stuck on "extracting" for longer than this, we assume the previous
+// request was force-killed (e.g. Vercel timeout) rather than still genuinely running, and we
+// let a new request take over from the last persisted checkpoint instead of hard-blocking it.
+const STALE_EXTRACTING_MS = 90_000
+
 export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -42,7 +57,7 @@ export async function POST(request: Request) {
   // Fetch the source material (include raw_text for questions mode)
   const { data: material, error: matErr } = await admin
     .from('source_materials')
-    .select('id, file_name, file_type, raw_text, chunk_status')
+    .select('id, file_name, file_type, raw_text, chunk_status, chunks_extracted, chunk_sections_done, chunk_status_updated_at')
     .eq('id', source_material_id)
     .single()
 
@@ -51,8 +66,18 @@ export async function POST(request: Request) {
   }
 
   if (material.chunk_status === 'extracting') {
-    return NextResponse.json({ error: 'Extraction already in progress' }, { status: 409 })
+    const updatedAt = material.chunk_status_updated_at ? new Date(material.chunk_status_updated_at).getTime() : 0
+    const staleMs = Date.now() - updatedAt
+    if (staleMs < STALE_EXTRACTING_MS) {
+      return NextResponse.json({ error: 'Extraction already in progress' }, { status: 409 })
+    }
+    // Stale — the previous request almost certainly died mid-batch. Fall through and resume
+    // from the last persisted checkpoint (chunk_sections_done) rather than blocking forever.
   }
+
+  // Resume point from a previous batch, if any.
+  const resumeOffset = material.chunk_sections_done ?? 0
+  const seedInserted = material.chunks_extracted ?? 0
 
   // Determine extraction strategy:
   // - 'questions' mode OR non-docx file → use raw_text (already extracted during upload)
@@ -88,8 +113,13 @@ export async function POST(request: Request) {
     }
   }
 
-  // Mark as extracting
-  await admin.from('source_materials').update({ chunk_status: 'extracting', chunk_error: null }).eq('id', source_material_id)
+  // Mark as extracting — chunk_status_updated_at lets the staleness check above detect a
+  // force-killed run on the next request, instead of staying stuck on "extracting" forever.
+  await admin.from('source_materials').update({
+    chunk_status: 'extracting',
+    chunk_error: null,
+    chunk_status_updated_at: new Date().toISOString(),
+  }).eq('id', source_material_id)
 
   // Set up SSE stream
   const encoder = new TextEncoder()
@@ -105,8 +135,10 @@ export async function POST(request: Request) {
       const fallbackTopicId = topic_id ?? null
       const subtopicMap = new Map<string, string>()
 
-      let totalInserted = 0
-      let sortIndex = 0
+      // Seed from what's already in the DB from earlier batches/requests, so the running
+      // total shown to the admin never regresses on resume.
+      let totalInserted = seedInserted
+      let sortIndex = seedInserted
 
       /**
        * Ensure subtopic exists and return its id. Cached in subtopicMap.
@@ -149,8 +181,12 @@ export async function POST(request: Request) {
               exact_source_quote: c.exact_source_quote ?? null,
               context_text: c.context_text ?? null,
               source_section: c.source_section,
+              source_page_start: c.source_page_start ?? null,
+              source_page_end: c.source_page_end ?? null,
               key_terms: c.key_terms,
               rule_type: c.rule_type,
+              inferred_difficulty: c.inferred_difficulty ?? null,
+              difficulty_reason: c.difficulty_reason ?? null,
               is_approved: false,
               sort_order: sortIndex++,
             }
@@ -181,13 +217,43 @@ export async function POST(request: Request) {
           .eq('id', source_material_id)
       }
 
+      // Persist the exact resume point after every individual section / question-batch — not
+      // just at the end of this request's batch. This is the core of the resumability: even if
+      // this request dies mid-batch, the next request only ever has to redo the one unit that
+      // was in flight, never the whole document.
+      async function onUnitDone(absoluteIndex: number) {
+        await admin.from('source_materials').update({
+          chunk_sections_done: absoluteIndex,
+          chunk_status_updated_at: new Date().toISOString(),
+        }).eq('id', source_material_id)
+      }
+
+      const batchSize = useQuestionsMode ? QUESTIONS_BATCH_SIZE : NOTES_BATCH_SIZE
+      const range = { offset: resumeOffset, limit: batchSize }
+
       try {
-        if (useQuestionsMode) {
-          // Questions mode: flush after each batch of ~5 questions
-          await extractChunksFromQuestions(material.raw_text!, topic_name ?? 'SQE1', send, onChunks)
-        } else {
-          // Notes mode: flush after each section — large docs with many sections are fully safe
-          await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send, onChunks)
+        const result = useQuestionsMode
+          ? await extractChunksFromQuestions(material.raw_text!, topic_name ?? 'SQE1', send, onChunks, range, onUnitDone)
+          : await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send, onChunks, range, onUnitDone)
+
+        if (!result.done) {
+          // More units remain — leave chunk_status as "extracting" (now with a fresh
+          // chunk_status_updated_at from onUnitDone) so the client's next call resumes cleanly,
+          // and a genuinely abandoned run is still recoverable via the staleness check.
+          await admin.from('source_materials').update({
+            chunks_extracted: totalInserted,
+            chunk_sections_total: result.totalUnits,
+          }).eq('id', source_material_id)
+
+          send({
+            stage: 'batch_done',
+            message: `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} chunks saved so far`,
+            sections_total: result.totalUnits,
+            sections_done: result.unitsDone,
+            chunks_found: totalInserted,
+          })
+          controller.close()
+          return
         }
 
         if (totalInserted === 0) {
@@ -203,6 +269,7 @@ export async function POST(request: Request) {
         await admin.from('source_materials').update({
           chunk_status: 'extracted',
           chunks_extracted: totalInserted,
+          chunk_sections_total: result.totalUnits,
         }).eq('id', source_material_id)
 
         send({
@@ -212,17 +279,19 @@ export async function POST(request: Request) {
           sections_done: totalInserted,
         })
       } catch (err) {
-        // Even if we error out, preserve whatever was inserted before the failure
+        // Even if we error out, preserve whatever was inserted before the failure. Status goes
+        // to "pending" (not "extracted") whenever the document isn't fully done, so the admin
+        // upload page knows to offer Resume rather than treating this as finished.
         const msg = err instanceof Error ? err.message : 'Extraction failed'
         await admin.from('source_materials').update({
-          chunk_status: totalInserted > 0 ? 'extracted' : 'failed',
-          chunk_error: totalInserted > 0 ? `Partial extraction — stopped after ${totalInserted} chunks: ${msg}` : msg,
+          chunk_status: totalInserted > 0 ? 'pending' : 'failed',
+          chunk_error: totalInserted > 0 ? `Paused after ${totalInserted} chunks: ${msg}` : msg,
           chunks_extracted: totalInserted,
         }).eq('id', source_material_id)
         send({
           stage: 'error',
           message: totalInserted > 0
-            ? `Stopped after ${totalInserted} chunks — ${msg}. Partial results saved and available in the Knowledge Graph.`
+            ? `Paused after ${totalInserted} chunks — ${msg}. Partial results saved — click Extract again to resume.`
             : msg,
           error: msg,
           chunks_found: totalInserted,
