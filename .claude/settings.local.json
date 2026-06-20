@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/arturocano/**)",
+      "Bash(npx create-next-app@latest sqe-platform --typescript --tailwind --app --src-dir --no-eslint --import-alias \"@/*\" --yes)",
+      "Bash(npm install *)",
+      "Bash(mkdir -p /Users/arturocano/sqe-platform/src/app/\\\\\\(auth\\\\\\)/sign-in \\\\ *)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const fs=require\\('fs'\\);const p=JSON.parse\\(fs.readFileSync\\('/dev/stdin','utf8'\\)\\);console.log\\(p.main,p.exports\\)\")"
+    ]
+  }
+}
