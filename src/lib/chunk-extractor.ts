@@ -116,6 +116,22 @@ function isFrontMatterNode(section: DocSection): boolean {
   return TOC_TITLE_RE.test(section.title.trim())
 }
 
+/**
+ * True if a section's own body content is just its own heading restated with a page number
+ * stuck on — e.g. content "Formation of a company7" under a heading also titled "Formation of
+ * a company". This is what an individual TOC bullet line looks like when the parser reads it
+ * as its own section node rather than as a child of a single "Contents" blob: no real legal
+ * rule, just the dot-leader artifact. A genuine section never has body text identical to its
+ * own heading, so this never false-positives on real content.
+ */
+function isTocBulletNoise(section: DocSection): boolean {
+  const content = section.content.trim()
+  if (!content) return false
+  const { title: contentAsTitle } = splitTitlePage(content)
+  const { title: ownTitle } = splitTitlePage(section.title)
+  return contentAsTitle.toLowerCase() === ownTitle.toLowerCase()
+}
+
 export interface OutlineEntry {
   title: string
   page: number | null
@@ -827,20 +843,23 @@ export function flattenToLeaves(sections: DocSection[]): DocSection[] {
   const leaves: DocSection[] = []
 
   function walk(section: DocSection) {
-    // Skip Contents/TOC pages entirely — neither their own text nor anything nested under
-    // them (the TOC bullet list) should ever become an extractable chunk.
-    if (isFrontMatterNode(section)) return
-
     // No minimum content length — even a single sentence is a legal rule we must not lose.
     const hasContent = section.content.trim().length > 0
     const hasChildren = section.children.length > 0
 
+    // A Contents/TOC heading's own accumulated text is the dot-leader bullet blob, never real
+    // content — drop it. IMPORTANT: still always recurse into children below regardless. In
+    // some documents the heading-level model nests the real chapters underneath the (mis-ranked)
+    // Contents heading rather than as later siblings, so bailing out of the whole subtree here
+    // (as an earlier version of this function did) silently deleted the entire document.
+    const dropOwnContent = isFrontMatterNode(section) || isTocBulletNoise(section)
+
     if (!hasChildren && hasContent) {
-      leaves.push(section)
+      if (!dropOwnContent) leaves.push(section)
     } else if (hasChildren) {
       // If this section has its own content (intro text above its child sections),
       // emit it as a virtual leaf first so it isn't lost.
-      if (hasContent) {
+      if (hasContent && !dropOwnContent) {
         leaves.push({ ...section, children: [] })
       }
       section.children.forEach(walk)
