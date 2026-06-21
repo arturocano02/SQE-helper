@@ -57,6 +57,7 @@ export default function AdminUploadPage() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [uploading, setUploading] = useState(false)
   const [chunkTopicId, setChunkTopicId] = useState<string>('')
+  const [paperFilter, setPaperFilter] = useState<'all' | 'FLK1' | 'FLK2'>('all')
   const [chunkExtraction, setChunkExtraction] = useState<Record<string, ChunkExtractionState>>({})
   const [topics, setTopics] = useState<Topic[]>([])
   // null = not checked yet, 0 = checked and genuinely empty, >0 = has chunks.
@@ -241,7 +242,7 @@ export default function AdminUploadPage() {
       [fileName]: { ...(prev[fileName] ?? {}), status: 'running', message: 'Starting…' },
     }))
 
-    const MAX_AUTO_RETRIES = 5
+    const MAX_AUTO_RETRIES = 8
     let consecutiveErrors = 0
     let stage: 'done' | 'batch_done' | 'error' = 'batch_done'
 
@@ -468,6 +469,46 @@ export default function AdminUploadPage() {
                   }
                 </p>
 
+                <label className="block mb-3">
+                  <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
+                    Which paper is this?{' '}
+                    <span style={{ color: 'var(--text-muted)' }}>— narrows the topic list below to the right 6 topics</span>
+                  </span>
+                  <div className="flex gap-2">
+                    {([
+                      ['all', 'Not sure'],
+                      ['FLK1', 'FLK1'],
+                      ['FLK2', 'FLK2'],
+                    ] as const).map(([val, label]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => {
+                          setPaperFilter(val)
+                          // Clear any topic pick from the other paper so a stale selection
+                          // can't silently stay applied after narrowing the list.
+                          if (val !== 'all' && chunkTopicId) {
+                            const current = topics.find(t => t.id === chunkTopicId)
+                            if (current && current.paper !== val) setChunkTopicId('')
+                          }
+                        }}
+                        style={{
+                          padding: '5px 12px',
+                          borderRadius: 7,
+                          fontSize: 12,
+                          fontFamily: 'var(--font-dm-sans)',
+                          border: paperFilter === val ? '1px solid rgba(200,146,42,0.5)' : '1px solid var(--surface-border)',
+                          background: paperFilter === val ? 'var(--amber-soft)' : 'transparent',
+                          color: paperFilter === val ? 'var(--amber-text)' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </label>
+
                 <label className="block mb-5">
                   <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
                     {fileType === 'notes' ? (
@@ -491,7 +532,9 @@ export default function AdminUploadPage() {
                     }}
                   >
                     <option value="">{fileType === 'notes' ? 'Auto-detect (recommended)' : 'Select a topic…'}</option>
-                    {topics.map(t => <option key={t.id} value={t.id}>{t.name} ({t.paper})</option>)}
+                    {topics
+                      .filter(t => paperFilter === 'all' || t.paper === paperFilter)
+                      .map(t => <option key={t.id} value={t.id}>{t.name} ({t.paper})</option>)}
                   </select>
                 </label>
 

@@ -20,11 +20,21 @@ import type { ExtractionProgress, ChunkCandidate, ChunkMatch } from '@/lib/chunk
 // Each request only processes one small batch of sections/question-batches, so it always
 // finishes well within Vercel's function timeout. The client calls this endpoint repeatedly
 // (see admin upload page) until it reports stage: "done".
-export const maxDuration = 60
+//
+// Was 60s — too tight for dense sections (a section with many atomic rules triggers several
+// sequential Haiku classify calls before it's done). On large documents this caused the SAME
+// batch to hit the platform's hard timeout deterministically on every retry, never making
+// progress past that checkpoint — looked like "glitching" between paused/running because the
+// client kept auto-retrying the one batch that could never finish in time. Fluid Compute (see
+// CLAUDE.md) supports well beyond 60s, so raised to give real headroom.
+export const maxDuration = 280
 
 // Batch sizes are deliberately small — a handful of Claude calls per request — so a single
 // dropped connection can only ever cost re-running one small batch, never the whole document.
-const NOTES_BATCH_SIZE = 8
+// NOTES_BATCH_SIZE halved (8 → 4): fewer sections per request lowers the worst-case request
+// duration even if one of them is unusually dense, and tighter checkpoints (chunk_sections_done
+// advances more often) mean less progress lost per retry.
+const NOTES_BATCH_SIZE = 4
 const QUESTIONS_BATCH_SIZE = 3
 
 // If a record has been stuck on "extracting" for longer than this, we assume the previous
