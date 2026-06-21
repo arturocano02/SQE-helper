@@ -704,9 +704,25 @@ function buildHeadingStyleModel(paragraphs: DocxParagraph[]): HeadingStyleModel 
  * Word heading styles win outright when present; otherwise the paragraph's
  * signature is looked up in the model discovered from the whole document.
  */
+// Deeper than any real heading level the visual-clustering/Word-style model can produce —
+// forcing the Contents/TOC heading to this level means the very next heading of ANY kind
+// pops it off the nesting stack immediately, so it can only ever "absorb" content that comes
+// right after it on the Contents page itself, before the next real heading appears.
+const TOC_FORCED_LEVEL = 99
+
 function classifyHeadingParagraph(p: DocxParagraph, model: HeadingStyleModel): HeadingClassification | null {
   const text = p.runs.map(r => r.text).join('').trim()
   if (!text) return null
+
+  // Must be checked BEFORE the explicit Word-style branch below — if "CONTENTS" happens to
+  // use Word's built-in "Title" style, pStyleLevel would hand it level 1, and since nothing
+  // else in the whole rest of the document is ever shallow enough to pop a level-1 node off
+  // the stack, the ENTIRE remaining document would nest underneath it forever. That's exactly
+  // what was happening: the outline dump showed every heading in the document, all wrongly
+  // tagged as Contents/TOC content.
+  if (TOC_TITLE_RE.test(text)) {
+    return { level: TOC_FORCED_LEVEL, kind: 'definition', text }
+  }
 
   const explicitLevel = pStyleLevel(p.pStyle)
   if (explicitLevel !== null && text.length <= 200) {
