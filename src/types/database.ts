@@ -216,6 +216,12 @@ export interface SessionWithDetails extends Session {
   topics?: Topic[]
 }
 
+export interface ChunkOutlineEntry {
+  title: string
+  page: number | null
+  level: number
+}
+
 export interface SourceMaterial {
   id: string
   file_name: string
@@ -232,6 +238,10 @@ export interface SourceMaterial {
   chunks_extracted: number
   chunk_error: string | null
   file_hash: string | null
+  // Phase 1 of notes-mode extraction: the Contents/TOC page parsed into headings + page
+  // numbers, persisted so the admin can review it before Phase 2 (real chunk extraction) runs.
+  chunk_outline: { entries: ChunkOutlineEntry[]; frontMatterPageEnd: number } | null
+  chunk_outline_confirmed: boolean
 }
 
 // Joined / enriched types

@@ -55,6 +55,19 @@ interface ChunkExtractionState {
   outline?: Array<{ title: string; page: number | null; level: number }>
 }
 
+/**
+ * Phase 1 state for notes-mode .docx files — read-and-confirm the Contents page BEFORE any
+ * real chunk extraction is allowed to run, so TOC bullet lines never reach a Claude extraction
+ * call in the first place (the previous approach kept filtering them back out after the fact,
+ * which never quite caught every shape of TOC noise).
+ */
+interface OutlinePhaseState {
+  status: 'idle' | 'loading' | 'ready' | 'confirming' | 'confirmed' | 'error'
+  entries?: Array<{ title: string; page: number | null; level: number }>
+  frontMatterPageEnd?: number
+  message?: string
+}
+
 export default function AdminUploadPage() {
   const [fileType, setFileType] = useState<FileType>('notes')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
@@ -63,6 +76,7 @@ export default function AdminUploadPage() {
   const [chunkTopicId, setChunkTopicId] = useState<string>('')
   const [paperFilter, setPaperFilter] = useState<'all' | 'FLK1' | 'FLK2'>('all')
   const [chunkExtraction, setChunkExtraction] = useState<Record<string, ChunkExtractionState>>({})
+  const [outlinePhase, setOutlinePhase] = useState<Record<string, OutlinePhaseState>>({})
   const [topics, setTopics] = useState<Topic[]>([])
   // null = not checked yet, 0 = checked and genuinely empty, >0 = has chunks.
   // Sample questions only ever match against chunks that already exist — checking this
@@ -157,6 +171,53 @@ export default function AdminUploadPage() {
    * the fetch itself throws (dropped wifi, closed laptop lid) nothing already saved is lost —
    * the caller just needs to call this again to resume from the checkpoint.
    */
+  /**
+   * Phase 1 — parse-only read of the Contents page. No Claude calls, just OOXML parsing, so
+   * this is fast (a couple of seconds even for a long document). Persists the outline server
+   * side so the confirm step (and a page refresh) doesn't lose it.
+   */
+  async function readOutline(fileName: string, sourceMaterialId: string) {
+    setOutlinePhase(prev => ({ ...prev, [fileName]: { status: 'loading' } }))
+    try {
+      const res = await fetch('/api/admin/chunks/outline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_material_id: sourceMaterialId }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        setOutlinePhase(prev => ({ ...prev, [fileName]: { status: 'error', message: body?.error ?? 'Failed to read Contents page' } }))
+        return
+      }
+      setOutlinePhase(prev => ({
+        ...prev,
+        [fileName]: { status: 'ready', entries: body.outline ?? [], frontMatterPageEnd: body.frontMatterPageEnd ?? 0 },
+      }))
+    } catch (err) {
+      setOutlinePhase(prev => ({ ...prev, [fileName]: { status: 'error', message: err instanceof Error ? err.message : 'Failed to read Contents page' } }))
+    }
+  }
+
+  /** Phase 1 confirmation — unlocks Phase 2 (the real extraction batches) for this file. */
+  async function confirmOutline(fileName: string, sourceMaterialId: string) {
+    setOutlinePhase(prev => ({ ...prev, [fileName]: { ...prev[fileName], status: 'confirming' } }))
+    try {
+      const res = await fetch('/api/admin/chunks/outline', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_material_id: sourceMaterialId, confirmed: true }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        setOutlinePhase(prev => ({ ...prev, [fileName]: { ...prev[fileName], status: 'error', message: body?.error ?? 'Failed to confirm' } }))
+        return
+      }
+      setOutlinePhase(prev => ({ ...prev, [fileName]: { ...prev[fileName], status: 'confirmed' } }))
+    } catch (err) {
+      setOutlinePhase(prev => ({ ...prev, [fileName]: { ...prev[fileName], status: 'error', message: err instanceof Error ? err.message : 'Failed to confirm' } }))
+    }
+  }
+
   async function runOneBatch(fileName: string, sourceMaterialId: string): Promise<'done' | 'batch_done' | 'error' | 'conflict'> {
     const topic = topics.find(t => t.id === chunkTopicId)
     console.log(`[extract] → POST batch for "${fileName}" (source_material_id=${sourceMaterialId})`)
@@ -634,7 +695,15 @@ export default function AdminUploadPage() {
                     const notStarted = !state
                     const needsTopic = fileType === 'questions' && !chunkTopicId
                     const noChunksYet = fileType === 'questions' && !!chunkTopicId && topicChunkCount === 0
-                    const blocked = needsTopic || noChunksYet
+                    // Notes .docx files have a Contents page that must be read and confirmed
+                    // (Phase 1) before Phase 2 (real extraction) is allowed to run — this is
+                    // what stops TOC bullet lines from ever reaching extraction at all, rather
+                    // than relying on filtering them back out afterwards. Other file types
+                    // (sample-question PDFs, plain .txt notes) have no TOC concept and skip this.
+                    const isDocxNotes = fileType === 'notes' && /\.docx$/i.test(f.file.name)
+                    const outline = outlinePhase[f.file.name]
+                    const outlineConfirmed = outline?.status === 'confirmed'
+                    const blocked = needsTopic || noChunksYet || (isDocxNotes && !outlineConfirmed)
 
                     return (
                       <div key={f.file.name}>
@@ -642,7 +711,41 @@ export default function AdminUploadPage() {
                           <p className="font-sans text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                             {f.file.name}
                           </p>
-                          {notStarted && (
+                          {notStarted && isDocxNotes && !outlineConfirmed && (
+                            <div className="flex items-center gap-2 shrink-0">
+                              {(!outline || outline.status === 'idle' || outline.status === 'error') && (
+                                <button
+                                  onClick={() => readOutline(f.file.name, f.source_material_id!)}
+                                  style={{
+                                    background: 'var(--amber)', color: '#0A0A08', fontFamily: 'var(--font-dm-sans)',
+                                    fontWeight: 500, fontSize: 12, padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                                  }}
+                                  className="hover:brightness-110 active:scale-[0.98] transition-all duration-150"
+                                >
+                                  Step 2a — Read Contents →
+                                </button>
+                              )}
+                              {outline?.status === 'loading' && (
+                                <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>Reading Contents page…</span>
+                              )}
+                              {outline?.status === 'ready' && (
+                                <button
+                                  onClick={() => confirmOutline(f.file.name, f.source_material_id!)}
+                                  style={{
+                                    background: 'var(--status-correct)', color: '#0A0A08', fontFamily: 'var(--font-dm-sans)',
+                                    fontWeight: 500, fontSize: 12, padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                                  }}
+                                  className="hover:brightness-110 active:scale-[0.98] transition-all duration-150"
+                                >
+                                  ✓ Confirm — looks right, continue
+                                </button>
+                              )}
+                              {outline?.status === 'confirming' && (
+                                <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>Confirming…</span>
+                              )}
+                            </div>
+                          )}
+                          {notStarted && (!isDocxNotes || outlineConfirmed) && (
                             <button
                               onClick={() => !blocked && extractChunks(f.file.name, f.source_material_id!)}
                               disabled={blocked}
@@ -715,6 +818,38 @@ export default function AdminUploadPage() {
                             </span>
                           )}
                         </div>
+
+                        {outline?.status === 'error' && (
+                          <p className="font-sans text-xs mt-1" style={{ color: 'var(--status-wrong)' }}>
+                            {outline.message}
+                          </p>
+                        )}
+
+                        {(outline?.status === 'ready' || outline?.status === 'confirming' || outline?.status === 'confirmed') && (
+                          <div className="mt-2 mb-2">
+                            <p className="font-sans text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
+                              {outlineConfirmed ? '✓ Contents confirmed — ' : ''}
+                              Contents page read — {(outline.entries ?? []).length} headings/subheadings found
+                              {typeof outline.frontMatterPageEnd === 'number' && outline.frontMatterPageEnd > 0 && (
+                                <> · real content starts at page {outline.frontMatterPageEnd + 1}</>
+                              )}
+                            </p>
+                            <div
+                              className="rounded-lg overflow-y-auto"
+                              style={{ maxHeight: 220, background: 'var(--surface-2)', border: '1px solid var(--surface-border)', padding: '8px 10px' }}
+                            >
+                              {(outline.entries ?? []).map((o, i) => (
+                                <p
+                                  key={i}
+                                  className="font-mono text-[10px] leading-5"
+                                  style={{ color: 'var(--text-secondary)', paddingLeft: Math.max(0, o.level - 1) * 14 }}
+                                >
+                                  {o.title}{o.page !== null ? ` — p.${o.page}` : ''}
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {(isRunning || isDone) && state.sectionsFound && (
                           <details

@@ -67,7 +67,7 @@ export async function POST(request: Request) {
   // Fetch the source material (include raw_text for questions mode)
   const { data: material, error: matErr } = await admin
     .from('source_materials')
-    .select('id, file_name, file_type, raw_text, chunk_status, chunks_extracted, chunk_sections_done, chunk_status_updated_at, chunk_match_unmatched')
+    .select('id, file_name, file_type, raw_text, chunk_status, chunks_extracted, chunk_sections_done, chunk_status_updated_at, chunk_match_unmatched, chunk_outline_confirmed')
     .eq('id', source_material_id)
     .single()
 
@@ -101,6 +101,18 @@ export async function POST(request: Request) {
   // - 'questions' mode OR non-docx file → use raw_text (already extracted during upload)
   // - 'notes' mode (default) + docx → download original file buffer for mammoth HTML parsing
   const useQuestionsMode = extraction_mode === 'questions' || material.file_type !== 'docx'
+
+  // Notes-mode .docx is the only path that has a Contents/TOC page to misread as content, so
+  // it's the only path gated on Phase 1 (read + admin-confirm the outline via
+  // /api/admin/chunks/outline) having happened first. This is what stops TOC bullet lines from
+  // ever reaching a Claude extraction call in the first place, rather than relying on filtering
+  // them back out afterwards.
+  if (!useQuestionsMode && !material.chunk_outline_confirmed) {
+    return NextResponse.json(
+      { error: 'Read and confirm the Contents page first (Step 2a) before extracting chunks.' },
+      { status: 400 }
+    )
+  }
 
   let docxBuffer: Buffer | null = null
 

@@ -169,6 +169,25 @@ function findFrontMatterNodes(sections: DocSection[]): DocSection[] {
   return found
 }
 
+/**
+ * The physical last page the Contents section occupies (e.g. 2 or 3), derived from the
+ * document's own page-break markers rather than guessed from text/heading shape. This is the
+ * most reliable signal there is: whatever heading-level quirks scrambled the TOC bullets into
+ * the section tree, they're still all physically printed on the Contents pages — real content
+ * never starts before the page after the Contents section ends. Used as the primary filter in
+ * flattenToLeaves; the text-shape heuristics above are a fallback for documents with no usable
+ * page-break markers.
+ */
+function computeFrontMatterPageEnd(frontMatterNodes: DocSection[]): number {
+  let maxPage = 0
+  function walk(section: DocSection) {
+    if (section.firstPage !== null) maxPage = Math.max(maxPage, section.firstPage)
+    section.children.forEach(walk)
+  }
+  frontMatterNodes.forEach(walk)
+  return maxPage
+}
+
 /** Maps every heading the Contents page mentions (topic AND subtopic level, upper-cased) to
  *  the topic slug it falls under, by tracking which recognised topic heading we're currently
  *  nested below as we walk down the outline. */
@@ -194,7 +213,7 @@ function buildOutlineTopicMap(outline: OutlineEntry[]): Map<string, string> {
 }
 
 /** Flattens the outline tree into an ordered list for SSE transport (UI just needs order + level). */
-function flattenOutlineForTransport(entries: OutlineEntry[]): Array<{ title: string; page: number | null; level: number }> {
+export function flattenOutlineForTransport(entries: OutlineEntry[]): Array<{ title: string; page: number | null; level: number }> {
   const out: Array<{ title: string; page: number | null; level: number }> = []
   function walk(list: OutlineEntry[]) {
     for (const e of list) {
@@ -816,6 +835,7 @@ export async function parseDocxToSections(buffer: Buffer): Promise<{
   headingStyles: HeadingStyleSummary[]
   outline: OutlineEntry[]
   outlineTopicMap: Map<string, string>
+  frontMatterPageEnd: number
 }> {
   const bodyXml = await readDocumentXmlBody(buffer)
   const blocks = parseDocxBlocks(bodyXml)
@@ -830,16 +850,22 @@ export async function parseDocxToSections(buffer: Buffer): Promise<{
   const frontMatterNodes = findFrontMatterNodes(sections)
   const outline = frontMatterNodes.flatMap(buildOutlineFromNode)
   const outlineTopicMap = buildOutlineTopicMap(outline)
+  const frontMatterPageEnd = computeFrontMatterPageEnd(frontMatterNodes)
 
-  return { sections, headingStyles: model.summary, outline, outlineTopicMap }
+  return { sections, headingStyles: model.summary, outline, outlineTopicMap, frontMatterPageEnd }
 }
 
 /**
  * Flatten a section tree into leaf sections that have content.
  * A "leaf" is either a section with no children, or a section where
  * the content is substantial enough to process independently.
+ *
+ * `frontMatterPageEnd`, when known, is the authoritative filter: anything physically printed on
+ * the Contents pages is excluded regardless of where the (sometimes scrambled) heading hierarchy
+ * placed it in the tree. The text-shape checks below remain as a fallback for documents where no
+ * usable page-break markers were found (frontMatterPageEnd === 0).
  */
-export function flattenToLeaves(sections: DocSection[]): DocSection[] {
+export function flattenToLeaves(sections: DocSection[], frontMatterPageEnd = 0): DocSection[] {
   const leaves: DocSection[] = []
 
   function walk(section: DocSection) {
@@ -847,12 +873,14 @@ export function flattenToLeaves(sections: DocSection[]): DocSection[] {
     const hasContent = section.content.trim().length > 0
     const hasChildren = section.children.length > 0
 
+    const onContentsPage = frontMatterPageEnd > 0 && section.firstPage !== null && section.firstPage <= frontMatterPageEnd
+
     // A Contents/TOC heading's own accumulated text is the dot-leader bullet blob, never real
     // content — drop it. IMPORTANT: still always recurse into children below regardless. In
     // some documents the heading-level model nests the real chapters underneath the (mis-ranked)
     // Contents heading rather than as later siblings, so bailing out of the whole subtree here
     // (as an earlier version of this function did) silently deleted the entire document.
-    const dropOwnContent = isFrontMatterNode(section) || isTocBulletNoise(section)
+    const dropOwnContent = onContentsPage || isFrontMatterNode(section) || isTocBulletNoise(section)
 
     if (!hasChildren && hasContent) {
       if (!dropOwnContent) leaves.push(section)
@@ -1568,19 +1596,21 @@ export async function extractChunksFromDocx(
   let headingStyles: HeadingStyleSummary[] = []
   let outline: OutlineEntry[] = []
   let outlineTopicMap = new Map<string, string>()
+  let frontMatterPageEnd = 0
   try {
     const parsed = await parseDocxToSections(buffer)
     tree = parsed.sections
     headingStyles = parsed.headingStyles
     outline = parsed.outline
     outlineTopicMap = parsed.outlineTopicMap
+    frontMatterPageEnd = parsed.frontMatterPageEnd
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     onProgress({ stage: 'error', message: 'Failed to parse document', error: msg })
     throw err
   }
 
-  const leaves = flattenToLeaves(tree)
+  const leaves = flattenToLeaves(tree, frontMatterPageEnd)
 
   if (leaves.length === 0) {
     onProgress({ stage: 'error', message: 'No sections found in document. Check the document structure.' })
