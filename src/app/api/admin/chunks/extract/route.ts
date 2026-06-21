@@ -344,10 +344,17 @@ export async function POST(request: Request) {
           : await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send, onChunks, range, onUnitDone)
 
         if (!result.done) {
-          // More units remain — leave chunk_status as "extracting" (now with a fresh
-          // chunk_status_updated_at from onUnitDone) so the client's next call resumes cleanly,
-          // and a genuinely abandoned run is still recoverable via the staleness check.
+          // More units remain. Crucially, clear chunk_status away from "extracting" here —
+          // that status is exactly what the top-of-handler 409 check looks for, so leaving it
+          // set between batches meant every single sequential continuation call (the client's
+          // own very next request, not a duplicate) walked straight into its own lock and got
+          // rejected, only ever getting through once the 90s staleness window happened to lapse.
+          // With small fast batches finishing in a few seconds, that produced exactly the
+          // "going back and forth" 409 storm reported — this was self-inflicted, not contention
+          // from another tab/loop. "pending" mirrors the status used for partial progress in the
+          // catch block below and is what the resume/checkpoint logic already expects to see.
           await admin.from('source_materials').update({
+            chunk_status: 'pending',
             chunks_extracted: totalInserted,
             chunk_sections_total: result.totalUnits,
           }).eq('id', source_material_id)
