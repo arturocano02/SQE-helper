@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import type { Question, Topic, QuestionStatus, Difficulty, QuestionType } from '@/types/database'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
@@ -12,6 +13,7 @@ interface QuestionTableProps {
 }
 
 export default function QuestionTable({ questions: initialQuestions, topics }: QuestionTableProps) {
+  const router = useRouter()
   const [questions, setQuestions] = useState(initialQuestions)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -57,35 +59,58 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
   async function bulkApprove() {
     if (selected.size === 0) return
     setBulkLoading(true)
-    await fetch('/api/admin/questions', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: Array.from(selected), status: 'approved' }),
-    })
-    setQuestions(qs =>
-      qs.map(q => selected.has(q.id) ? { ...q, status: 'approved' as QuestionStatus } : q)
-    )
-    setSelected(new Set())
-    setBulkLoading(false)
+    try {
+      const res = await fetch('/api/admin/questions', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selected), status: 'approved' }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        alert(`Approve failed: ${body?.error ?? res.statusText}`)
+        return
+      }
+      setQuestions(qs =>
+        qs.map(q => selected.has(q.id) ? { ...q, status: 'approved' as QuestionStatus } : q)
+      )
+      setSelected(new Set())
+      // Bust the Next.js router cache so other pages (e.g. the admin dashboard) that read
+      // question counts don't keep showing stale numbers after a soft navigation.
+      router.refresh()
+    } finally {
+      setBulkLoading(false)
+    }
   }
 
   async function bulkDelete() {
     if (selected.size === 0) return
     if (!confirm(`Permanently delete ${selected.size} question${selected.size !== 1 ? 's' : ''}? This cannot be undone.`)) return
     setBulkLoading(true)
-    await fetch('/api/admin/questions', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: Array.from(selected) }),
-    })
-    setQuestions(qs => qs.filter(q => !selected.has(q.id)))
-    setSelected(new Set())
-    setBulkLoading(false)
+    try {
+      const res = await fetch('/api/admin/questions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selected) }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        alert(`Delete failed: ${body?.error ?? res.statusText}`)
+        return
+      }
+      setQuestions(qs => qs.filter(q => !selected.has(q.id)))
+      setSelected(new Set())
+      // Same router cache bust as bulkApprove — without this, navigating back to the
+      // dashboard can show the deleted questions in its counts/lists for up to 30s.
+      router.refresh()
+    } finally {
+      setBulkLoading(false)
+    }
   }
 
   function handleSave(updated: Question) {
     setQuestions(qs => qs.map(q => q.id === updated.id ? updated : q))
     setEditingId(null)
+    router.refresh()
   }
 
   useEffect(() => {

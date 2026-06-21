@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Cormorant_Garamond, DM_Sans, DM_Mono } from 'next/font/google'
+import { Analytics } from '@vercel/analytics/next'
 import FeedbackButton from '@/components/ui/FeedbackButton'
 import './globals.css'
 
@@ -32,6 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-base text-primary antialiased">
         {children}
         <FeedbackButton />
+        <Analytics />
       </body>
     </html>
   )
