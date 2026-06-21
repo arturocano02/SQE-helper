@@ -75,14 +75,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Source material not found' }, { status: 404 })
   }
 
+  // Tagged so concurrent requests for different files (or the same file from different tabs)
+  // are easy to tell apart in the Vercel function logs.
+  const logTag = `[chunks/extract ${material.file_name}]`
+  console.log(`${logTag} request received — chunk_status=${material.chunk_status}, chunk_sections_done=${material.chunk_sections_done ?? 0}`)
+
   if (material.chunk_status === 'extracting') {
     const updatedAt = material.chunk_status_updated_at ? new Date(material.chunk_status_updated_at).getTime() : 0
     const staleMs = Date.now() - updatedAt
     if (staleMs < STALE_EXTRACTING_MS) {
+      console.warn(`${logTag} 409 — already extracting, last update ${staleMs}ms ago (stale threshold ${STALE_EXTRACTING_MS}ms)`)
       return NextResponse.json({ error: 'Extraction already in progress' }, { status: 409 })
     }
     // Stale — the previous request almost certainly died mid-batch. Fall through and resume
     // from the last persisted checkpoint (chunk_sections_done) rather than blocking forever.
+    console.warn(`${logTag} chunk_status was "extracting" but stale (${staleMs}ms > ${STALE_EXTRACTING_MS}ms) — taking over from checkpoint.`)
   }
 
   // Resume point from a previous batch, if any.
@@ -345,6 +352,7 @@ export async function POST(request: Request) {
             chunk_sections_total: result.totalUnits,
           }).eq('id', source_material_id)
 
+          console.log(`${logTag} batch_done — ${result.unitsDone}/${result.totalUnits} sections, ${totalInserted} ${resultNoun}`)
           send({
             stage: 'batch_done',
             message: useQuestionsMode && totalUnmatched > 0
@@ -360,6 +368,7 @@ export async function POST(request: Request) {
         }
 
         if (totalInserted === 0) {
+          console.error(`${logTag} failed — 0 ${resultNoun} after processing all ${result.totalUnits} units`)
           await admin.from('source_materials').update({
             chunk_status: 'failed',
             chunk_error: useQuestionsMode
@@ -377,6 +386,7 @@ export async function POST(request: Request) {
           return
         }
 
+        console.log(`${logTag} done — ${totalInserted} ${resultNoun} total, ${totalUnmatched} unmatched`)
         await admin.from('source_materials').update({
           chunk_status: 'extracted',
           chunks_extracted: totalInserted,
@@ -398,6 +408,7 @@ export async function POST(request: Request) {
         // to "pending" (not "extracted") whenever the document isn't fully done, so the admin
         // upload page knows to offer Resume rather than treating this as finished.
         const msg = err instanceof Error ? err.message : 'Extraction failed'
+        console.error(`${logTag} batch threw after ${totalInserted} ${resultNoun} (resumeOffset=${resumeOffset}):`, err)
         await admin.from('source_materials').update({
           chunk_status: totalInserted > 0 ? 'pending' : 'failed',
           chunk_error: totalInserted > 0 ? `Paused after ${totalInserted} chunks: ${msg}` : msg,

@@ -66,6 +66,14 @@ export default function AdminUploadPage() {
   // not just after the extraction API call fails.
   const [topicChunkCount, setTopicChunkCount] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Guards against overlapping extraction loops for the same file. Without this, clicking
+  // Resume while an earlier loop is still alive (e.g. it's mid-backoff-sleep after a transient
+  // error, not actually dead) stacks a second concurrent extractChunks() run on top of the
+  // first. Both then hammer the same source_material_id — the server's "extracting" lock
+  // (chunk_status) rejects whichever one loses the race with a 409, that loop's retry/backoff
+  // kicks in, and now there are two (or more) zombie loops fighting forever, which looks exactly
+  // like "pausing and resuming on its own" even though the admin isn't clicking anything.
+  const activeExtractions = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     createClient().from('topics').select('*').order('sort_order').then(({ data }) => {
@@ -145,8 +153,9 @@ export default function AdminUploadPage() {
    * the fetch itself throws (dropped wifi, closed laptop lid) nothing already saved is lost —
    * the caller just needs to call this again to resume from the checkpoint.
    */
-  async function runOneBatch(fileName: string, sourceMaterialId: string): Promise<'done' | 'batch_done' | 'error'> {
+  async function runOneBatch(fileName: string, sourceMaterialId: string): Promise<'done' | 'batch_done' | 'error' | 'conflict'> {
     const topic = topics.find(t => t.id === chunkTopicId)
+    console.log(`[extract] → POST batch for "${fileName}" (source_material_id=${sourceMaterialId})`)
 
     let res: Response
     try {
@@ -159,7 +168,8 @@ export default function AdminUploadPage() {
           ...(topic ? { topic_id: topic.id, topic_name: topic.name } : {}),
         }),
       })
-    } catch {
+    } catch (err) {
+      console.error(`[extract] fetch threw for "${fileName}":`, err)
       setChunkExtraction(prev => ({
         ...prev,
         [fileName]: { ...prev[fileName], status: 'paused', message: 'Connection lost — click Resume to continue from where it left off.' },
@@ -167,10 +177,27 @@ export default function AdminUploadPage() {
       return 'error'
     }
 
-    if (!res.ok || !res.body) {
+    // 409 = the server already has a batch in flight for this source material — almost always
+    // because a previous loop for this same file is still alive (e.g. mid-backoff-sleep, not
+    // actually dead) and a second one got started on top of it, typically by clicking
+    // Resume/Extract again before the first run had actually stopped. Auto-retrying a 409 just
+    // makes two loops collide forever — instead, back off and let the OTHER loop own this file.
+    if (res.status === 409) {
+      const body = await res.json().catch(() => null)
+      console.warn(`[extract] 409 for "${fileName}" — another run already owns this file:`, body)
       setChunkExtraction(prev => ({
         ...prev,
-        [fileName]: { ...prev[fileName], status: 'paused', message: 'Request failed — click Resume to continue from where it left off.' },
+        [fileName]: { ...prev[fileName], status: 'running', message: 'Already running in another tab/loop — waiting for it to finish…' },
+      }))
+      return 'conflict'
+    }
+
+    if (!res.ok || !res.body) {
+      const body = await res.json().catch(() => null)
+      console.error(`[extract] request failed for "${fileName}" (status ${res.status}):`, body)
+      setChunkExtraction(prev => ({
+        ...prev,
+        [fileName]: { ...prev[fileName], status: 'paused', message: `Request failed${body?.error ? ` — ${body.error}` : ''} — click Resume to continue from where it left off.` },
       }))
       return 'error'
     }
@@ -192,6 +219,7 @@ export default function AdminUploadPage() {
           const ev = JSON.parse(line.slice(6))
           if (ev.stage === 'done' || ev.stage === 'batch_done' || ev.stage === 'error') {
             finalStage = ev.stage
+            console.log(`[extract] "${fileName}" → ${ev.stage}: ${ev.message ?? ''}`)
           }
           setChunkExtraction(prev => {
             const existing = prev[fileName] ?? {}
@@ -237,28 +265,67 @@ export default function AdminUploadPage() {
    * exhausting the retries does this surface a "paused" state for the admin to resume by hand.
    */
   async function extractChunks(fileName: string, sourceMaterialId: string) {
-    setChunkExtraction(prev => ({
-      ...prev,
-      [fileName]: { ...(prev[fileName] ?? {}), status: 'running', message: 'Starting…' },
-    }))
+    // Refuse to start a second loop for a file that already has one running. This is the fix
+    // for the "pauses and resumes by itself" symptom: without this guard, a click on Resume
+    // while a previous loop was still alive (e.g. asleep mid-backoff after a transient error,
+    // not actually finished) would start a second concurrent loop, and the two would fight
+    // over the same source_material_id forever, each bouncing the UI between running/paused.
+    if (activeExtractions.current.has(fileName)) {
+      console.warn(`[extract] "${fileName}" already has an active extraction loop — ignoring duplicate start.`)
+      return
+    }
+    activeExtractions.current.add(fileName)
+    console.log(`[extract] "${fileName}" — starting extraction loop`)
 
-    const MAX_AUTO_RETRIES = 8
-    let consecutiveErrors = 0
-    let stage: 'done' | 'batch_done' | 'error' = 'batch_done'
+    try {
+      setChunkExtraction(prev => ({
+        ...prev,
+        [fileName]: { ...(prev[fileName] ?? {}), status: 'running', message: 'Starting…' },
+      }))
 
-    while (stage === 'batch_done' || (stage === 'error' && consecutiveErrors <= MAX_AUTO_RETRIES)) {
-      if (stage === 'error') {
-        consecutiveErrors++
-        await new Promise(r => setTimeout(r, Math.min(2000 * 2 ** (consecutiveErrors - 1), 20000)))
+      const MAX_AUTO_RETRIES = 8
+      const MAX_CONFLICT_WAITS = 15
+      let consecutiveErrors = 0
+      let consecutiveConflicts = 0
+      let stage: 'done' | 'batch_done' | 'error' | 'conflict' = 'batch_done'
+
+      while (
+        stage === 'batch_done' ||
+        (stage === 'error' && consecutiveErrors <= MAX_AUTO_RETRIES) ||
+        (stage === 'conflict' && consecutiveConflicts <= MAX_CONFLICT_WAITS)
+      ) {
+        if (stage === 'error') {
+          consecutiveErrors++
+          await new Promise(r => setTimeout(r, Math.min(2000 * 2 ** (consecutiveErrors - 1), 20000)))
+          setChunkExtraction(prev => ({
+            ...prev,
+            [fileName]: { ...prev[fileName], status: 'running', message: `Retrying after a dropped batch (attempt ${consecutiveErrors}/${MAX_AUTO_RETRIES})…` },
+          }))
+        } else if (stage === 'conflict') {
+          // Someone/something else (another tab, a stale loop) currently owns this file server-side.
+          // Wait it out rather than hammering — the server's own staleness check will reclaim the
+          // lock after 90s if that other run actually died, so this only needs to outlast that.
+          consecutiveConflicts++
+          await new Promise(r => setTimeout(r, 5000))
+        } else {
+          consecutiveErrors = 0
+          consecutiveConflicts = 0
+        }
+        stage = await runOneBatch(fileName, sourceMaterialId)
+        if (stage !== 'error') consecutiveErrors = 0
+        if (stage !== 'conflict') consecutiveConflicts = 0
+      }
+
+      if (stage === 'conflict') {
+        console.error(`[extract] "${fileName}" — gave up after ${MAX_CONFLICT_WAITS} conflict waits, still locked by another run.`)
         setChunkExtraction(prev => ({
           ...prev,
-          [fileName]: { ...prev[fileName], status: 'running', message: `Retrying after a dropped batch (attempt ${consecutiveErrors}/${MAX_AUTO_RETRIES})…` },
+          [fileName]: { ...prev[fileName], status: 'paused', message: 'Still locked by another run — wait a minute, then click Resume.' },
         }))
-      } else {
-        consecutiveErrors = 0
       }
-      stage = await runOneBatch(fileName, sourceMaterialId)
-      if (stage !== 'error') consecutiveErrors = 0
+      console.log(`[extract] "${fileName}" — extraction loop exited (final stage: ${stage})`)
+    } finally {
+      activeExtractions.current.delete(fileName)
     }
   }
 
