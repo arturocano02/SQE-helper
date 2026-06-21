@@ -14,8 +14,8 @@
 
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { extractChunksFromDocx, extractChunksFromQuestions } from '@/lib/chunk-extractor'
-import type { ExtractionProgress } from '@/lib/chunk-extractor'
+import { extractChunksFromDocx, matchQuestionsToChunks } from '@/lib/chunk-extractor'
+import type { ExtractionProgress, ChunkCandidate, ChunkMatch } from '@/lib/chunk-extractor'
 
 // Each request only processes one small batch of sections/question-batches, so it always
 // finishes well within Vercel's function timeout. The client calls this endpoint repeatedly
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
   // Fetch the source material (include raw_text for questions mode)
   const { data: material, error: matErr } = await admin
     .from('source_materials')
-    .select('id, file_name, file_type, raw_text, chunk_status, chunks_extracted, chunk_sections_done, chunk_status_updated_at')
+    .select('id, file_name, file_type, raw_text, chunk_status, chunks_extracted, chunk_sections_done, chunk_status_updated_at, chunk_match_unmatched')
     .eq('id', source_material_id)
     .single()
 
@@ -78,6 +78,7 @@ export async function POST(request: Request) {
   // Resume point from a previous batch, if any.
   const resumeOffset = material.chunk_sections_done ?? 0
   const seedInserted = material.chunks_extracted ?? 0
+  const seedUnmatched = material.chunk_match_unmatched ?? 0
 
   // Determine extraction strategy:
   // - 'questions' mode OR non-docx file → use raw_text (already extracted during upload)
@@ -113,6 +114,31 @@ export async function POST(request: Request) {
     }
   }
 
+  // Questions mode never creates chunks — it only matches sample MCQs against chunks that
+  // already exist from notes. That requires a specific topic (to scope the candidate list)
+  // and at least one chunk already in the knowledge graph for it.
+  let candidates: ChunkCandidate[] = []
+  if (useQuestionsMode) {
+    if (!topic_id) {
+      return NextResponse.json(
+        { error: 'Select a topic before uploading sample questions — needed to match against that topic\'s existing knowledge chunks.' },
+        { status: 400 }
+      )
+    }
+    const { data: existingChunks } = await admin
+      .from('knowledge_chunks')
+      .select('id, rule_text, source_section')
+      .eq('topic_id', topic_id)
+    candidates = (existingChunks ?? []) as ChunkCandidate[]
+
+    if (candidates.length === 0) {
+      return NextResponse.json(
+        { error: 'No knowledge chunks exist for this topic yet. Upload and extract revision notes for this topic first — sample questions only match against chunks that already exist, they never create new ones.' },
+        { status: 400 }
+      )
+    }
+  }
+
   // Mark as extracting — chunk_status_updated_at lets the staleness check above detect a
   // force-killed run on the next request, instead of staying stuck on "extracting" forever.
   await admin.from('source_materials').update({
@@ -139,6 +165,7 @@ export async function POST(request: Request) {
       // total shown to the admin never regresses on resume.
       let totalInserted = seedInserted
       let sortIndex = seedInserted
+      let totalUnmatched = seedUnmatched
 
       /**
        * Ensure subtopic exists and return its id. Cached in subtopicMap.
@@ -217,6 +244,68 @@ export async function POST(request: Request) {
           .eq('id', source_material_id)
       }
 
+      // Questions mode equivalent of flushChunks — UPDATES the matched chunk's existing
+      // row(s) with style/difficulty signal, AND inserts the question itself into the shared
+      // `questions` table as a draft (origin: 'sample_paper'). It never creates a new
+      // knowledge_chunks row — that would break the "chunks only ever come from notes" rule —
+      // but the question content is real exam-style material worth keeping, gated behind the
+      // same draft → admin-approves → visible-to-users workflow as AI-generated questions.
+      // Flushed immediately per batch (same as flushChunks) so a dropped connection only ever
+      // costs the one in-flight batch, never previously-saved work.
+      async function flushMatches(matches: ChunkMatch[]): Promise<number> {
+        let matchedQuestions = 0
+        const rows: Array<Record<string, unknown>> = []
+
+        for (const m of matches) {
+          if (m.chunk_ids.length > 0) {
+            await Promise.all(m.chunk_ids.map(id =>
+              admin.from('knowledge_chunks').update({
+                exact_source_quote: m.exact_source_quote,
+                context_text: m.context_text,
+                inferred_difficulty: m.inferred_difficulty,
+                difficulty_reason: m.difficulty_reason,
+              }).eq('id', id)
+            ))
+            matchedQuestions++
+          }
+
+          if (m.prompt && m.options && m.correct_answer) {
+            rows.push({
+              topic_id: topic_id ?? null,
+              knowledge_chunk_id: m.chunk_ids[0] ?? null,
+              additional_chunk_ids: m.chunk_ids.slice(1),
+              type: 'mcq',
+              difficulty: m.inferred_difficulty,
+              prompt: m.prompt,
+              options: m.options,
+              correct_answer: m.correct_answer,
+              explanation: m.exact_source_quote ?? m.context_text ?? null,
+              status: 'draft',
+              origin: 'sample_paper',
+              source_material_id,
+              needs_review: m.chunk_ids.length === 0,
+            })
+          }
+        }
+
+        if (rows.length > 0) {
+          await admin.from('questions').insert(rows)
+        }
+
+        return matchedQuestions
+      }
+
+      async function onMatches(matches: ChunkMatch[]) {
+        const flushed = await flushMatches(matches)
+        const unmatchedInBatch = matches.filter(m => m.chunk_ids.length === 0).length
+        totalInserted += flushed
+        totalUnmatched += unmatchedInBatch
+        await admin
+          .from('source_materials')
+          .update({ chunks_extracted: totalInserted, chunk_match_unmatched: totalUnmatched })
+          .eq('id', source_material_id)
+      }
+
       // Persist the exact resume point after every individual section / question-batch — not
       // just at the end of this request's batch. This is the core of the resumability: even if
       // this request dies mid-batch, the next request only ever has to redo the one unit that
@@ -230,10 +319,11 @@ export async function POST(request: Request) {
 
       const batchSize = useQuestionsMode ? QUESTIONS_BATCH_SIZE : NOTES_BATCH_SIZE
       const range = { offset: resumeOffset, limit: batchSize }
+      const resultNoun = useQuestionsMode ? 'questions matched' : 'knowledge chunks saved'
 
       try {
         const result = useQuestionsMode
-          ? await extractChunksFromQuestions(material.raw_text!, topic_name ?? 'SQE1', send, onChunks, range, onUnitDone)
+          ? await matchQuestionsToChunks(material.raw_text!, topic_name ?? 'SQE1', candidates, send, onMatches, range, onUnitDone)
           : await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send, onChunks, range, onUnitDone)
 
         if (!result.done) {
@@ -247,10 +337,13 @@ export async function POST(request: Request) {
 
           send({
             stage: 'batch_done',
-            message: `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} chunks saved so far`,
+            message: useQuestionsMode && totalUnmatched > 0
+              ? `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} ${resultNoun}, ${totalUnmatched} unmatched (flagged) so far`
+              : `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} ${resultNoun} so far`,
             sections_total: result.totalUnits,
             sections_done: result.unitsDone,
             chunks_found: totalInserted,
+            unmatched_found: useQuestionsMode ? totalUnmatched : undefined,
           })
           controller.close()
           return
@@ -259,9 +352,17 @@ export async function POST(request: Request) {
         if (totalInserted === 0) {
           await admin.from('source_materials').update({
             chunk_status: 'failed',
-            chunk_error: 'No chunks extracted — check document structure',
+            chunk_error: useQuestionsMode
+              ? `No questions could be matched to existing chunks (${totalUnmatched} flagged as unmatched) — check the topic and document structure`
+              : 'No chunks extracted — check document structure',
+            chunk_match_unmatched: totalUnmatched,
           }).eq('id', source_material_id)
-          send({ stage: 'error', message: 'No chunks found', error: 'No chunks extracted' })
+          send({
+            stage: 'error',
+            message: useQuestionsMode ? `No matches found — all ${totalUnmatched} questions were flagged as unmatched` : 'No chunks found',
+            error: useQuestionsMode ? 'No matches' : 'No chunks extracted',
+            unmatched_found: useQuestionsMode ? totalUnmatched : undefined,
+          })
           controller.close()
           return
         }
@@ -270,13 +371,17 @@ export async function POST(request: Request) {
           chunk_status: 'extracted',
           chunks_extracted: totalInserted,
           chunk_sections_total: result.totalUnits,
+          chunk_match_unmatched: totalUnmatched,
         }).eq('id', source_material_id)
 
         send({
           stage: 'done',
-          message: `Done — ${totalInserted} knowledge chunks saved`,
+          message: useQuestionsMode && totalUnmatched > 0
+            ? `Done — ${totalInserted} ${resultNoun}, ${totalUnmatched} questions flagged as unmatched (no existing chunk fit — review manually)`
+            : `Done — ${totalInserted} ${resultNoun}`,
           chunks_found: totalInserted,
           sections_done: totalInserted,
+          unmatched_found: useQuestionsMode ? totalUnmatched : undefined,
         })
       } catch (err) {
         // Even if we error out, preserve whatever was inserted before the failure. Status goes

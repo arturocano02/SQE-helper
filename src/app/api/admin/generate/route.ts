@@ -9,6 +9,9 @@
  *   difficulty: 'easy'|'medium'|'hard'|'mixed'
  *   count_per_topic: number      // how many questions per topic (1–100)
  *   status?: 'draft'|'approved'  // default: 'draft'
+ *   include_sample_questions?: boolean  // default: true. MCQ only — feeds style guide + sample-question
+ *                                        // style examples into generation. Set false to generate purely
+ *                                        // from the knowledge chunk text.
  * }
  *
  * SSE events:
@@ -208,12 +211,14 @@ export async function POST(request: Request) {
     count_per_topic = 10,
     status: targetStatus = 'draft',
     content_type = 'mcq',
+    include_sample_questions: includeSampleQuestions = true,
   } = body as {
     topic_ids: string[]
     difficulty: 'easy' | 'medium' | 'hard' | 'mixed'
     count_per_topic: number
     status?: 'draft' | 'approved'
     content_type?: 'mcq' | 'flashcard'
+    include_sample_questions?: boolean
   }
 
   if (!topic_ids || topic_ids.length === 0) {
@@ -304,15 +309,20 @@ export async function POST(request: Request) {
             .slice(0, clampedCount * 2)
 
           // Per-topic sample-question style references — used as tone/structure inspiration only.
-          const { data: styleRows } = await admin
-            .from('knowledge_chunks')
-            .select('exact_source_quote')
-            .eq('topic_id', topic.id)
-            .not('exact_source_quote', 'is', null)
-            .limit(5)
-          const styleExamples = (styleRows ?? [])
-            .map(r => (r as { exact_source_quote: string | null }).exact_source_quote)
-            .filter((s): s is string => !!s)
+          // Skipped entirely if the admin has unticked "Use sample questions as style reference".
+          let styleExamples: string[] = []
+          if (includeSampleQuestions && content_type === 'mcq') {
+            const { data: styleRows } = await admin
+              .from('knowledge_chunks')
+              .select('exact_source_quote')
+              .eq('topic_id', topic.id)
+              .not('exact_source_quote', 'is', null)
+              .limit(5)
+            styleExamples = (styleRows ?? [])
+              .map(r => (r as { exact_source_quote: string | null }).exact_source_quote)
+              .filter((s): s is string => !!s)
+          }
+          const effectiveStyleGuide = includeSampleQuestions ? topic.question_style_guide : null
 
           const topicRows: Array<Record<string, unknown>> = []
           let chunkIndex = 0
@@ -353,7 +363,7 @@ export async function POST(request: Request) {
               continue
             }
 
-            const q = await generateQuestion(chunk.rule_text, chunk.context_text, topic.name, diff, styleExamples, topic.question_style_guide)
+            const q = await generateQuestion(chunk.rule_text, chunk.context_text, topic.name, diff, styleExamples, effectiveStyleGuide)
             if (!q) continue
 
             const resolvedTopicId = slugToId.get(q.topic_slug) ?? topic.id

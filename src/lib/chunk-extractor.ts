@@ -105,6 +105,9 @@ export interface ExtractionProgress {
    *  in this document and the level it assigned each one, so a misread hierarchy is
    *  visible before extraction runs rather than discovered after the fact. */
   heading_styles?: Array<{ level: number; kind: string; sample: string; count: number; source: string }>
+  /** Questions-mode only — running count of sample questions that couldn't be matched to any
+   *  existing chunk. Surfaced so the admin sees these flagged instead of them silently vanishing. */
+  unmatched_found?: number
   error?: string
 }
 
@@ -959,58 +962,151 @@ async function extractChunksFromSection(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Questions mode: extract legal rules FROM sample MCQ papers
+// Questions mode: MATCH sample MCQs to EXISTING (notes-derived) knowledge chunks
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// ARCHITECTURAL RULE — do not break this: knowledge_chunks are only ever created
+// from revision notes (extractChunksFromDocx, above). Sample question papers never
+// create a new chunk. Instead, each sample MCQ is matched against the chunks that
+// already exist for the topic (which must come from notes uploaded first), and the
+// match only ever WRITES style/difficulty signal (a verbatim quote + a difficulty
+// judgement) onto that existing chunk's row. If a question doesn't match anything
+// already in the knowledge graph, it is skipped — never used to invent a new rule.
 
-const QUESTIONS_EXTRACTION_SYSTEM_PROMPT = `You are analyzing official SQE1 sample exam questions to extract the underlying legal rules being tested.
+/** A candidate chunk a sample question can be matched against. */
+export interface ChunkCandidate {
+  id: string
+  rule_text: string
+  source_section: string
+}
 
-Your output will be used as the SOURCE OF TRUTH for generating study content. Accuracy and traceability are more important than conciseness.
+/**
+ * The only thing a sample-question batch is allowed to produce: zero, one, or several
+ * matched chunks + style signal. A question can legitimately test more than one rule at
+ * once (e.g. a completion-date question that combines a time-limit rule and a notice-period
+ * rule) — `chunk_ids` is empty, never invented, when nothing in the provided list is a
+ * genuine match. An empty array is a FLAG for the admin, not a silent drop.
+ */
+export interface ChunkMatch {
+  chunk_ids: string[]
+  exact_source_quote: string | null
+  context_text: string | null
+  inferred_difficulty: 'easy' | 'medium' | 'hard' | null
+  difficulty_reason: string | null
+  matched: boolean
+  /** The question itself, normalized so it can be saved into the question bank as a draft
+   *  (origin: 'sample_paper') — never shown to users until an admin approves it, same as
+   *  any AI-generated draft. Null only if the batch text for this entry was too garbled to
+   *  recover a clean MCQ (still kept as a flagged entry, just with no insertable content). */
+  prompt: string | null
+  options: { label: string; text: string }[] | null
+  correct_answer: string | null
+}
 
-For each MCQ provided:
-1. Copy the CORRECT ANSWER and its explanation verbatim into "exact_source_quote"
-2. State the legal rule it tests precisely in "rule_text"
-3. Note the trap or misconception the question is designed to catch in "context_text"
-4. Judge how hard the question actually is to get right and explain why in "difficulty_reason"
+/** Result of a single batched MATCH call — mirrors BatchExtractionResult but for matches. */
+export interface BatchMatchResult {
+  matches: ChunkMatch[]
+  totalUnits: number
+  unitsDone: number
+  done: boolean
+  matchedCount: number
+  unmatchedCount: number
+}
+
+const QUESTIONS_MATCH_SYSTEM_PROMPT = `You are analyzing official SQE1 sample exam questions to understand how they test an EXISTING knowledge graph of legal rules, and how hard each question actually is. This is signal-gathering, not rule extraction.
+
+You are given a list of EXISTING knowledge chunks (id + rule_text), already extracted from this topic's revision notes — these are the ONLY rules you may reference. You are also given a batch of sample MCQs.
+
+Your job is NOT to write new legal rules. For each MCQ:
+1. Decide which chunk(s) from the provided list the question actually tests, by comparing the question's correct answer/explanation to each chunk's rule_text. Most questions test exactly ONE rule — but some genuinely combine two or three (e.g. a single question that depends on both a time-limit rule and an exception to it). List every chunk id it really relies on in "chunk_ids".
+2. If none of the provided chunks is a genuine match, set "chunk_ids" to an empty array []. Do not force a weak match just to fill the field — an honest "no match" is more useful than a wrong tag.
+3. Copy the CORRECT ANSWER and its explanation verbatim into "exact_source_quote".
+4. Note the trap or misconception the wrong options exploit in "context_text".
+5. Judge how hard the question actually is to get right and explain why in "difficulty_reason".
+6. Also normalize the question itself for re-use in the live question bank (it goes in as a DRAFT — an admin reviews it before it's ever shown to a student, regardless of match status): "prompt" is the question stem verbatim, "options" is exactly 5 entries {label, text} for labels A-E with their text exactly as written, and "correct_answer" is the correct label. If the source has fewer/more than 5 options, or you can't confidently recover a clean 5-option MCQ from the text, set "prompt", "options" and "correct_answer" all to null instead of guessing — it's still kept and flagged, just without insertable content.
 
 DIFFICULTY CALIBRATION — judge each question independently, do not default to "medium":
 - "easy": tests a single well-known rule directly, distractors are clearly wrong, no multi-step reasoning required
 - "medium": requires applying a rule to specific facts, or distinguishing between two genuinely plausible options
 - "hard": requires combining multiple rules, spotting an exception to a general rule, working through a multi-step calculation/timeline, or the wrong options are deliberately close to correct (e.g. right rule but wrong threshold/party/time limit)
 
-"difficulty_reason" must explain the SPECIFIC thing that makes it that difficulty — e.g. "Easy: directly recites the s.172 duty with no factual application needed" or "Hard: distractor B applies the correct test but to the wrong party, which only an attentive student would catch."
+"difficulty_reason" must explain the SPECIFIC thing that makes it that difficulty.
 
 STRICT RULES — do not break any of these:
 
-1. VERBATIM QUOTE. "exact_source_quote" must copy the correct answer text and/or the explanation text from the question exactly — word for word. Do not paraphrase.
+1. ONLY MATCH, NEVER INVENT. Every id in "chunk_ids" must be copied exactly from the provided list. Never invent an id, and never describe a rule that isn't one of the provided chunks. If nothing matches, the array must be empty — not your best guess.
 
-2. STATUTORY REFERENCES EXACTLY. If the answer mentions "s.172 CA 2006", write exactly that. If the section number looks inconsistent or garbled, flag it as rule_type "uncertain" and explain in context_text.
+2. VERBATIM QUOTE. "exact_source_quote" must copy the correct answer text and/or the explanation text from the question exactly — word for word. Do not paraphrase.
 
-3. PRESERVE ALL QUALIFIERS. Do not drop thresholds, time limits, exceptions, percentages, or party names.
+3. PRESERVE ALL QUALIFIERS. Do not drop thresholds, time limits, exceptions, percentages, or party names when quoting.
 
-4. DO NOT INVENT. If you cannot identify a clear statutory reference from the question text, do not add one. Leave it out of rule_text and flag in context_text instead.
+4. If the question text includes an "[Answer key]" line, that is the correct answer pulled from a separate answer-key section of the document — treat it exactly as you would an inline answer.
 
-5. SELF-CHECK before finalising each chunk:
-   - Is exact_source_quote copied verbatim from the question above?
-   - Is the statutory reference exactly as it appears in the question?
-   - Did I preserve all exceptions and qualifiers?
+5. NEVER INVENT OPTIONS EITHER. "options" must be the 5 options exactly as they appear in the source. If you're not confident you've recovered all 5 correctly, set prompt/options/correct_answer to null rather than fabricating or padding.
 
-Return ONLY a JSON array. No explanation, no markdown fences.
+Return ONLY a JSON array, one entry PER QUESTION (in order, including unmatched ones — never skip an entry). No explanation, no markdown fences.
 
 [
   {
+    "chunk_ids": ["uuid-from-the-provided-list", "..."],
     "exact_source_quote": "Verbatim text of the correct answer / explanation from the question",
-    "rule_text": "The precise legal rule the question tests — must match the verbatim quote in substance",
-    "context_text": "The common misconception the wrong options exploit; also note any ambiguity or corrupted section numbers",
-    "key_terms": ["exact legal term as written in question"],
-    "rule_type": "definition|threshold|test|exception|procedure|consequence|general_principle|uncertain",
-    "subtopic_name": "Specific area (e.g. Directors' Duties)",
-    "section_name": "Specific aspect (e.g. s.172 Duty to promote success of the company)",
+    "context_text": "The common misconception the wrong options exploit; also note any ambiguity",
     "inferred_difficulty": "easy|medium|hard",
-    "difficulty_reason": "The specific thing that makes this question that difficulty"
+    "difficulty_reason": "The specific thing that makes this question that difficulty",
+    "prompt": "The question stem verbatim, or null",
+    "options": [{"label": "A", "text": "..."}, {"label": "B", "text": "..."}, {"label": "C", "text": "..."}, {"label": "D", "text": "..."}, {"label": "E", "text": "..."}],
+    "correct_answer": "A|B|C|D|E or null"
   }
 ]`
 
-const QUESTIONS_PER_EXTRACTION_BATCH = 5
+// Larger than the notes-mode batching would use — the candidate list (resent in full on every
+// call) dominates token cost far more than a few extra questions does, so grouping more
+// questions per call amortizes that fixed cost instead of paying it over and over.
+const QUESTIONS_PER_EXTRACTION_BATCH = 10
+
+// Sample papers are commonly laid out as: all questions first, then a separate
+// "Answers" / "Answer Key" / "Suggested Answers" section at the very end with the
+// correct letter + explanation per question number. Left alone, that means the batch
+// containing question 4 never sees its own answer — it's pages away. This detects that
+// layout and re-attaches each answer directly under its matching "Question N" block
+// before the document is split into batches, so every batch is self-contained no matter
+// how the source PDF separated questions from answers.
+function mergeAnswerKeySection(rawText: string): string {
+  const headerRe = /\n[ \t]*(answers?|answer\s*key|suggested\s*answers?|model\s*answers?)[ \t]*\n/i
+  const match = headerRe.exec(rawText)
+  // Require the heading to be in the back half of the document — an early match is far
+  // more likely to be a stray mention of the word "answer" inside a question, not a real key.
+  if (!match || match.index < rawText.length * 0.3) return rawText
+
+  const questionsPart = rawText.slice(0, match.index)
+  const answersPart = rawText.slice(match.index + match[0].length)
+
+  // Parse "N. <answer text...>" entries — each runs until the next numbered entry or EOF.
+  const entries = [...answersPart.matchAll(/(?:^|\n)\s*(\d{1,3})[\.\)]\s+([\s\S]*?)(?=\n\s*\d{1,3}[\.\)]\s|$)/g)]
+  if (entries.length < 3) return rawText // doesn't look like a real answer key — leave untouched
+
+  const answerByNumber = new Map<number, string>()
+  for (const m of entries) {
+    const text = m[2].trim()
+    if (text) answerByNumber.set(parseInt(m[1], 10), text)
+  }
+
+  const qSplits = [...questionsPart.matchAll(/\n(?=Question\s+(\d{1,3})\s*\n)/gi)]
+  if (qSplits.length < 3) return rawText // questions weren't "Question N" headed — nothing to merge against
+
+  const positions = qSplits.map(m => ({ index: m.index!, num: parseInt(m[1], 10) }))
+  positions.push({ index: questionsPart.length, num: -1 })
+
+  let rebuilt = questionsPart.slice(0, positions[0].index)
+  for (let i = 0; i < positions.length - 1; i++) {
+    const block = questionsPart.slice(positions[i].index, positions[i + 1].index)
+    const answer = answerByNumber.get(positions[i].num)
+    const hasInlineAnswer = /correct answer|^\s*answer:/im.test(block)
+    rebuilt += (!answer || hasInlineAnswer) ? block : `${block.trimEnd()}\n\n[Answer key] ${answer}\n`
+  }
+
+  return rebuilt
+}
 
 /**
  * Split raw text from a sample question PDF into batches of questions.
@@ -1079,33 +1175,52 @@ function extractPageRange(text: string): { pageStart: number | null; pageEnd: nu
   return { pageStart: Math.min(...pages), pageEnd: Math.max(...pages), cleaned }
 }
 
-async function extractChunksFromQuestionBatch(
+// Keeps the candidate list sent to Claude bounded — large topics can have hundreds of
+// chunks, and every batch call resends the full list. Truncating rule_text and capping
+// the count keeps token usage sane without materially hurting match quality (Claude only
+// needs enough of each rule_text to tell candidates apart).
+const MAX_CANDIDATES_PER_CALL = 150
+const CANDIDATE_RULE_TEXT_CHARS = 160
+
+function buildCandidateBlock(candidates: ChunkCandidate[]): string {
+  return candidates
+    .slice(0, MAX_CANDIDATES_PER_CALL)
+    .map(c => `- id: ${c.id}\n  rule: ${c.rule_text.slice(0, CANDIDATE_RULE_TEXT_CHARS)}`)
+    .join('\n')
+}
+
+async function matchQuestionBatchToChunks(
   client: Anthropic,
   batch: string,
   batchIndex: number,
   topicHint: string,
-): Promise<ExtractedChunk[]> {
-  const { pageStart, pageEnd, cleaned: cleanedBatch } = extractPageRange(batch)
+  candidates: ChunkCandidate[],
+): Promise<ChunkMatch[]> {
+  const { cleaned: cleanedBatch } = extractPageRange(batch)
+  const candidateBlock = buildCandidateBlock(candidates)
+  const validIds = new Set(candidates.map(c => c.id))
 
   const message = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 16000,
-    system: QUESTIONS_EXTRACTION_SYSTEM_PROMPT,
+    // Responses now also carry the normalized question (prompt + 5 options) for every
+    // entry, not just the style signal — bumped up from 8000 so a full batch of 10
+    // questions doesn't routinely hit the truncate-and-bisect path.
+    max_tokens: 12000,
+    system: QUESTIONS_MATCH_SYSTEM_PROMPT,
     messages: [{
       role: 'user',
-      content: `Topic context: ${topicHint}\nBatch ${batchIndex + 1}:\n\n${cleanedBatch}`,
+      content: `Topic context: ${topicHint}\n\nEXISTING CHUNKS for this topic (match against these only):\n${candidateBlock}\n\nBatch ${batchIndex + 1} — sample questions:\n\n${cleanedBatch}`,
     }],
   })
 
   if (message.stop_reason === 'max_tokens') {
-    // Split the batch in half and retry each piece independently
     console.warn(
-      `[chunk-extractor] Questions batch ${batchIndex} truncated — splitting into two sub-batches`
+      `[chunk-extractor] Questions match batch ${batchIndex} truncated — splitting into two sub-batches`
     )
     const mid = findParagraphBoundary(batch, Math.floor(batch.length / 2)) || Math.floor(batch.length / 2)
     const [firstHalf, secondHalf] = await Promise.all([
-      extractChunksFromQuestionBatch(client, batch.slice(0, mid), batchIndex * 10,     topicHint),
-      extractChunksFromQuestionBatch(client, batch.slice(mid),    batchIndex * 10 + 1, topicHint),
+      matchQuestionBatchToChunks(client, batch.slice(0, mid), batchIndex * 10,     topicHint, candidates),
+      matchQuestionBatchToChunks(client, batch.slice(mid),    batchIndex * 10 + 1, topicHint, candidates),
     ])
     return [...firstHalf, ...secondHalf]
   }
@@ -1114,68 +1229,95 @@ async function extractChunksFromQuestionBatch(
   const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
 
   let parsed: Array<{
+    chunk_ids?: unknown
     exact_source_quote?: string
-    rule_text: string
     context_text?: string
-    key_terms?: string[]
-    rule_type?: string
-    subtopic_name?: string
-    section_name?: string
     inferred_difficulty?: string
     difficulty_reason?: string
+    prompt?: string | null
+    options?: unknown
+    correct_answer?: string | null
   }>
 
   try {
     parsed = JSON.parse(cleaned)
     if (!Array.isArray(parsed)) throw new Error('Not an array')
   } catch {
-    console.error(`[chunk-extractor] Questions batch ${batchIndex} parse failed:`, cleaned.slice(0, 200))
+    console.error(`[chunk-extractor] Questions match batch ${batchIndex} parse failed:`, cleaned.slice(0, 200))
     return []
   }
 
-  const topicSlug = detectTopicSlug([topicHint, batch.slice(0, 500)])
+  // Every entry is kept — including ones with no valid match — so the caller can count and
+  // report unmatched questions instead of them silently vanishing. Only individual hallucinated
+  // ids are stripped out of chunk_ids; we never invent a replacement for a stripped id.
+  return parsed.map(m => {
+    const rawIds = Array.isArray(m.chunk_ids) ? m.chunk_ids : []
+    const chunk_ids = rawIds.filter((id): id is string => typeof id === 'string' && validIds.has(id))
 
-  return parsed
-    .filter(c => c.rule_text && c.rule_text.trim().length > 10)
-    .map(c => ({
-      rule_text: c.rule_text.trim(),
-      exact_source_quote: c.exact_source_quote?.trim() || null,
-      context_text: c.context_text ?? null,
-      key_terms: Array.isArray(c.key_terms) ? c.key_terms : [],
-      rule_type: (c.rule_type as ExtractedChunk['rule_type']) ?? 'general_principle',
-      source_section: `Sample Questions — ${topicHint} — Batch ${batchIndex + 1}`,
-      source_page_start: pageStart,
-      source_page_end: pageEnd,
-      subtopic_name: c.subtopic_name ?? topicHint,
-      section_name: c.section_name ?? `Batch ${batchIndex + 1}`,
-      topic_slug: topicSlug,
-      inferred_difficulty: (['easy', 'medium', 'hard'].includes(c.inferred_difficulty ?? '')
-        ? c.inferred_difficulty
+    // Only treat the question as insertable if it's a genuinely clean 5-option MCQ with a
+    // valid correct label — anything short of that, we'd rather drop the content (still flag
+    // the match) than save a malformed question into the live bank.
+    const rawOptions = Array.isArray(m.options) ? m.options : []
+    const cleanOptions = rawOptions.filter(
+      (o): o is { label: string; text: string } =>
+        !!o && typeof o === 'object' && typeof (o as { label?: unknown }).label === 'string' && typeof (o as { text?: unknown }).text === 'string'
+    )
+    const validLabels = new Set(['A', 'B', 'C', 'D', 'E'])
+    const hasFiveValidOptions = cleanOptions.length === 5 && cleanOptions.every(o => validLabels.has(o.label))
+    const correctLabel = typeof m.correct_answer === 'string' ? m.correct_answer : null
+    const isInsertable = !!m.prompt?.trim() && hasFiveValidOptions && !!correctLabel && validLabels.has(correctLabel)
+      && cleanOptions.some(o => o.label === correctLabel)
+
+    return {
+      chunk_ids,
+      exact_source_quote: m.exact_source_quote?.trim() || null,
+      context_text: m.context_text?.trim() || null,
+      inferred_difficulty: (['easy', 'medium', 'hard'].includes(m.inferred_difficulty ?? '')
+        ? m.inferred_difficulty
         : null) as 'easy' | 'medium' | 'hard' | null,
-      difficulty_reason: c.difficulty_reason?.trim() || null,
-    }))
+      difficulty_reason: m.difficulty_reason?.trim() || null,
+      matched: chunk_ids.length > 0,
+      prompt: isInsertable ? m.prompt!.trim() : null,
+      options: isInsertable ? cleanOptions : null,
+      correct_answer: isInsertable ? correctLabel : null,
+    }
+  })
 }
 
 /**
- * Extract knowledge chunks from a sample MCQ paper (raw text, e.g. from PDF).
- * Reads each question and extracts the underlying legal rule being tested —
- * not the question itself, but the rule a student must know to answer correctly.
+ * Match a sample MCQ paper (raw text, e.g. from PDF) against EXISTING knowledge chunks
+ * for the topic. Never creates a new chunk — only ever writes style/difficulty signal
+ * onto a chunk that already exists from notes. `candidates` must be non-empty (the
+ * caller is responsible for requiring notes to have been uploaded and extracted first).
  */
-export async function extractChunksFromQuestions(
+export async function matchQuestionsToChunks(
   rawText: string,
   topicName: string,
+  candidates: ChunkCandidate[],
   onProgress: (p: ExtractionProgress) => void,
-  onChunks?: (chunks: ExtractedChunk[]) => Promise<void>,
+  onMatches?: (matches: ChunkMatch[]) => Promise<void>,
   range?: { offset: number; limit: number },
   onUnitDone?: (absoluteIndex: number) => Promise<void>,
-): Promise<BatchExtractionResult> {
+): Promise<BatchMatchResult> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  onProgress({ stage: 'parsing', message: 'Splitting questions into batches…' })
+  if (candidates.length === 0) {
+    onProgress({
+      stage: 'error',
+      message: 'No knowledge chunks exist for this topic yet — upload and extract revision notes before sample questions.',
+      error: 'No candidate chunks',
+    })
+    throw new Error('No candidate chunks for this topic — extract notes first')
+  }
 
-  // Deterministic given the same rawText — re-splitting on every call is cheap and
-  // guarantees offsets line up the same way across resumed batches.
-  const batches = splitIntoQuestionBatches(rawText)
+  onProgress({ stage: 'parsing', message: 'Locating answer key and splitting questions into batches…' })
+
+  // Re-run on every batch call — deterministic given the same rawText, so offsets always
+  // line up the same way across resumed batches. Merging the answer key first means a
+  // batch is self-contained even when the source PDF lists answers separately at the end
+  // (the common "all questions, then 80 pages later an answer key" layout).
+  const mergedText = mergeAnswerKeySection(rawText)
+  const batches = splitIntoQuestionBatches(mergedText)
 
   if (batches.length === 0) {
     onProgress({ stage: 'error', message: 'No question batches found.', error: 'No questions detected' })
@@ -1188,33 +1330,33 @@ export async function extractChunksFromQuestions(
 
   onProgress({
     stage: 'parsing',
-    message: `Found ${batches.length} batches (~${QUESTIONS_PER_EXTRACTION_BATCH} questions each)`,
+    message: `Found ${batches.length} batches (~${QUESTIONS_PER_EXTRACTION_BATCH} questions each) — matching against ${candidates.length} existing chunks`,
     sections_total: batches.length,
     sections_done: offset,
     chunks_found: 0,
   })
 
-  const newChunks: ExtractedChunk[] = []
+  const newMatches: ChunkMatch[] = []
 
   for (let i = 0; i < batchSlice.length; i++) {
     const absoluteIndex = offset + i
     onProgress({
       stage: 'extracting',
-      message: `Extracting rules from batch ${absoluteIndex + 1} / ${batches.length}…`,
+      message: `Matching batch ${absoluteIndex + 1} / ${batches.length} to existing chunks…`,
       sections_total: batches.length,
       sections_done: absoluteIndex,
-      chunks_found: newChunks.length,
+      chunks_found: newMatches.length,
     })
 
     try {
-      const chunks = await extractChunksFromQuestionBatch(client, batchSlice[i], absoluteIndex, topicName)
-      newChunks.push(...chunks)
-      // Flush this batch's chunks immediately so partial progress survives a dropped connection
-      if (onChunks && chunks.length > 0) {
-        await onChunks(chunks)
+      const matches = await matchQuestionBatchToChunks(client, batchSlice[i], absoluteIndex, topicName, candidates)
+      newMatches.push(...matches)
+      // Flush this batch's matches immediately so partial progress survives a dropped connection
+      if (onMatches && matches.length > 0) {
+        await onMatches(matches)
       }
     } catch (err) {
-      console.error(`[chunk-extractor] Error on question batch ${absoluteIndex}:`, err)
+      console.error(`[chunk-extractor] Error on question match batch ${absoluteIndex}:`, err)
     }
 
     // Persist the exact resume point right after this question-batch — same reasoning as notes mode.
@@ -1225,18 +1367,20 @@ export async function extractChunksFromQuestions(
 
   const unitsDone = Math.min(offset + batchSlice.length, batches.length)
   const done = unitsDone >= batches.length
+  const matchedCount = newMatches.filter(m => m.matched).length
+  const unmatchedCount = newMatches.length - matchedCount
 
   onProgress({
     stage: done ? 'done' : 'extracting',
     message: done
-      ? `Done — ${unitsDone} batches processed`
-      : `Batch complete — ${unitsDone} / ${batches.length} question-batches processed so far`,
+      ? `Done — ${unitsDone} batches matched`
+      : `Batch complete — ${unitsDone} / ${batches.length} question-batches matched so far`,
     sections_total: batches.length,
     sections_done: unitsDone,
-    chunks_found: newChunks.length,
+    chunks_found: newMatches.length,
   })
 
-  return { chunks: newChunks, totalUnits: batches.length, unitsDone, done }
+  return { matches: newMatches, totalUnits: batches.length, unitsDone, done, matchedCount, unmatchedCount }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

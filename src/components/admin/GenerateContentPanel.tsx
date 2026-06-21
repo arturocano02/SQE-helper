@@ -51,6 +51,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
   const [difficulty, setDifficulty] = useState<'mixed' | 'easy' | 'medium' | 'hard'>('mixed')
   const [countPerTopic, setCountPerTopic] = useState(10)
   const [targetStatus, setTargetStatus] = useState<'draft' | 'approved'>('draft')
+  const [includeSampleQuestions, setIncludeSampleQuestions] = useState(true)
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState<ProgressEvent[]>([])
   const [done, setDone] = useState(false)
@@ -164,6 +165,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
           count_per_topic: countPerTopic,
           status: targetStatus,
           content_type: contentType,
+          include_sample_questions: contentType === 'mcq' ? includeSampleQuestions : false,
         }),
       })
 
@@ -495,6 +497,37 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
                     )
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* Sample questions toggle — MCQs only, since style examples only feed MCQ generation */}
+            {contentType === 'mcq' && (
+              <div className="mb-6">
+                <label
+                  className="flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition"
+                  style={{
+                    background: includeSampleQuestions ? 'var(--accent-dim)' : 'var(--surface-2)',
+                    border: `1px solid ${includeSampleQuestions ? 'rgba(200,146,42,0.35)' : 'var(--surface-border)'}`,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeSampleQuestions}
+                    onChange={e => setIncludeSampleQuestions(e.target.checked)}
+                    style={{ accentColor: 'var(--amber)', width: 14, height: 14, flexShrink: 0 }}
+                  />
+                  <div>
+                    <p
+                      className="font-sans text-sm font-medium"
+                      style={{ color: includeSampleQuestions ? 'var(--amber-text)' : 'var(--text-primary)' }}
+                    >
+                      Use sample questions as style reference
+                    </p>
+                    <p className="font-sans text-[10px] mt-0.5 leading-tight" style={{ color: 'var(--text-muted)' }}>
+                      Lets the generator see a few real sample questions and the style guide for tone and difficulty calibration — never copied verbatim. Turn off to generate purely from the knowledge chunk text.
+                    </p>
+                  </div>
+                </label>
               </div>
             )}
 

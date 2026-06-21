@@ -132,6 +132,16 @@ export interface Question {
   source_file: string | null
   version: number
   created_at: string
+  /** 'sample_paper' = pulled directly from an uploaded sample exam, never AI-generated.
+   *  Still gated behind status === 'draft' until an admin approves it like any other question. */
+  origin: 'ai_generated' | 'sample_paper'
+  source_material_id: string | null
+  /** A sample question can test more than one knowledge chunk at once — this holds any
+   *  beyond the primary one in knowledge_chunk_id. */
+  additional_chunk_ids: string[]
+  /** True when a sample question couldn't be matched to any existing chunk — flagged for
+   *  manual tagging rather than silently dropped or given an invented match. */
+  needs_review: boolean
 }
 
 export interface Session {

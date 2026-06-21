@@ -19,6 +19,7 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
   const [typeFilter, setTypeFilter] = useState<QuestionType | 'all'>('all')
   const [diffFilter, setDiffFilter] = useState<Difficulty | 'all'>('all')
   const [topicFilter, setTopicFilter] = useState<string>('all')
+  const [originFilter, setOriginFilter] = useState<'all' | 'ai_generated' | 'sample_paper'>('all')
   const [bulkLoading, setBulkLoading] = useState(false)
 
   const topicMap = new Map(topics.map(t => [t.id, t]))
@@ -28,8 +29,11 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
     if (typeFilter !== 'all' && q.type !== typeFilter) return false
     if (diffFilter !== 'all' && q.difficulty !== diffFilter) return false
     if (topicFilter !== 'all' && q.topic_id !== topicFilter) return false
+    if (originFilter !== 'all' && q.origin !== originFilter) return false
     return true
   })
+
+  const needsReviewCount = questions.filter(q => q.needs_review).length
 
   const editingQuestion = editingId ? questions.find(q => q.id === editingId) ?? null : null
 
@@ -134,7 +138,29 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
               {d === 'all' ? 'Any difficulty' : d}
             </button>
           ))}
+          <div style={{ width: 1, background: 'var(--surface-border)', margin: '0 4px' }} />
+          {([
+            ['all', 'All sources'],
+            ['ai_generated', 'AI-generated'],
+            ['sample_paper', 'From sample papers'],
+          ] as const).map(([val, label]) => (
+            <button key={val} onClick={() => setOriginFilter(val)} style={filterChipStyle(originFilter === val)}>
+              {label}
+            </button>
+          ))}
         </div>
+
+        {needsReviewCount > 0 && (
+          <div
+            className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg"
+            style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}
+          >
+            <span style={{ color: 'var(--status-warning)', fontSize: 13 }}>⚠</span>
+            <span className="font-sans text-xs" style={{ color: 'var(--status-warning)' }}>
+              {needsReviewCount} sample question{needsReviewCount !== 1 ? 's' : ''} couldn&apos;t be matched to a knowledge chunk — tag them manually or archive.
+            </span>
+          </div>
+        )}
 
         {/* Topic filter */}
         <select
@@ -249,6 +275,17 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
                       className="p-3 font-sans max-w-xs truncate"
                       style={{ color: 'var(--text-primary)' }}
                     >
+                      {q.needs_review && (
+                        <span title="Couldn't be matched to a knowledge chunk" style={{ color: 'var(--status-warning)', marginRight: 6 }}>⚠</span>
+                      )}
+                      {q.origin === 'sample_paper' && (
+                        <span
+                          className="font-sans text-[10px] uppercase tracking-wide mr-2 px-1.5 py-0.5 rounded"
+                          style={{ background: 'rgba(140,135,111,0.15)', color: 'var(--text-secondary)' }}
+                        >
+                          sample
+                        </span>
+                      )}
                       {q.prompt.slice(0, 60)}…
                     </td>
                     <td

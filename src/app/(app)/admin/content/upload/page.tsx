@@ -39,6 +39,9 @@ interface ChunkExtractionState {
   sectionsTotal?: number
   sectionsDone?: number
   chunksFound?: number
+  /** Questions mode only — how many sample questions couldn't be matched to any existing
+   *  chunk. Shown to the admin instead of those questions silently disappearing. */
+  unmatchedFound?: number
   /** Section paths found by the parser — shown so admin can verify all topics were detected */
   sectionsFound?: string[]
   /** Heading styles the parser auto-detected in this document and the level assigned to each —
@@ -56,6 +59,11 @@ export default function AdminUploadPage() {
   const [chunkTopicId, setChunkTopicId] = useState<string>('')
   const [chunkExtraction, setChunkExtraction] = useState<Record<string, ChunkExtractionState>>({})
   const [topics, setTopics] = useState<Topic[]>([])
+  // null = not checked yet, 0 = checked and genuinely empty, >0 = has chunks.
+  // Sample questions only ever match against chunks that already exist — checking this
+  // up front means the admin sees "this won't work yet" before they upload anything,
+  // not just after the extraction API call fails.
+  const [topicChunkCount, setTopicChunkCount] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -63,6 +71,20 @@ export default function AdminUploadPage() {
       setTopics((data ?? []) as Topic[])
     })
   }, [])
+
+  useEffect(() => {
+    if (fileType !== 'questions' || !chunkTopicId) {
+      setTopicChunkCount(null)
+      return
+    }
+    let cancelled = false
+    setTopicChunkCount(null)
+    fetch(`/api/admin/chunks?topic_id=${chunkTopicId}&limit=1`)
+      .then(res => res.json())
+      .then(json => { if (!cancelled) setTopicChunkCount(typeof json.total === 'number' ? json.total : null) })
+      .catch(() => { if (!cancelled) setTopicChunkCount(null) })
+    return () => { cancelled = true }
+  }, [fileType, chunkTopicId])
 
   function addFiles(incoming: FileList | null) {
     if (!incoming) return
@@ -187,6 +209,7 @@ export default function AdminUploadPage() {
                 sectionsTotal: ev.sections_total ?? existing.sectionsTotal,
                 sectionsDone: ev.sections_done ?? existing.sectionsDone,
                 chunksFound: chunksFoundSoFar,
+                unmatchedFound: ev.unmatched_found ?? existing.unmatchedFound,
                 // Latch the section list once we receive it — don't overwrite with undefined later
                 sectionsFound: ev.sections_found ?? existing.sectionsFound,
                 headingStyles: ev.heading_styles ?? existing.headingStyles,
@@ -203,8 +226,14 @@ export default function AdminUploadPage() {
   /**
    * Kicks off extraction, then keeps calling runOneBatch automatically as long as the
    * server reports "batch_done" (more work left, just resumed by the next request).
-   * Stops on "done" or a genuine error — for a paused/partial error, the admin can hit
-   * Resume (same function) to pick up right where it stopped.
+   *
+   * Long documents (e.g. an 85-page sample paper) take many batches, and any one of them
+   * can hit a transient blip (a dropped connection, a momentary 5xx). Rather than stopping
+   * the whole run and making the admin manually click Resume after every blip, a transient
+   * error is retried automatically (with backoff) up to MAX_AUTO_RETRIES times. Each batch
+   * that did succeed has already persisted its chunks/matches to the DB, so a retry only
+   * ever re-does the one batch that failed — nothing already saved is at risk. Only after
+   * exhausting the retries does this surface a "paused" state for the admin to resume by hand.
    */
   async function extractChunks(fileName: string, sourceMaterialId: string) {
     setChunkExtraction(prev => ({
@@ -212,9 +241,23 @@ export default function AdminUploadPage() {
       [fileName]: { ...(prev[fileName] ?? {}), status: 'running', message: 'Starting…' },
     }))
 
+    const MAX_AUTO_RETRIES = 5
+    let consecutiveErrors = 0
     let stage: 'done' | 'batch_done' | 'error' = 'batch_done'
-    while (stage === 'batch_done') {
+
+    while (stage === 'batch_done' || (stage === 'error' && consecutiveErrors <= MAX_AUTO_RETRIES)) {
+      if (stage === 'error') {
+        consecutiveErrors++
+        await new Promise(r => setTimeout(r, Math.min(2000 * 2 ** (consecutiveErrors - 1), 20000)))
+        setChunkExtraction(prev => ({
+          ...prev,
+          [fileName]: { ...prev[fileName], status: 'running', message: `Retrying after a dropped batch (attempt ${consecutiveErrors}/${MAX_AUTO_RETRIES})…` },
+        }))
+      } else {
+        consecutiveErrors = 0
+      }
       stage = await runOneBatch(fileName, sourceMaterialId)
+      if (stage !== 'error') consecutiveErrors = 0
     }
   }
 
@@ -251,8 +294,8 @@ export default function AdminUploadPage() {
             onClick={() => setFileType('questions')}
             icon={<BookIcon size={20} />}
             title="Sample Questions"
-            desc="Official SRA sample question papers (.pdf). Claude reads each MCQ and extracts the legal rule being tested."
-            badge=".pdf"
+            desc="Official SRA sample question papers (.pdf). Notes must already be uploaded for the topic — Claude matches each MCQ to an existing knowledge chunk and extracts style/difficulty signal only. It never creates new chunks."
+            badge="requires notes first"
             badgeColor="secondary"
           />
         </div>
@@ -421,16 +464,17 @@ export default function AdminUploadPage() {
                 <p className="font-sans text-xs mb-4" style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                   {fileType === 'notes'
                     ? 'Claude reads each section of your notes and extracts every distinct legal rule as an atomic chunk. These become the verified source of truth for generating questions.'
-                    : 'Claude reads each MCQ and extracts the underlying legal rule being tested — not the question itself, but the rule a student must know. These seed the knowledge graph.'
+                    : 'Claude matches each MCQ to a chunk that already exists for the selected topic (extracted from notes), then records the verbatim answer, the trap it sets, and how hard it really is. No new chunks are created here — only existing ones are enriched with style/difficulty signal.'
                   }
                 </p>
 
                 <label className="block mb-5">
                   <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
-                    Topic override{' '}
-                    <span style={{ color: 'var(--text-muted)' }}>
-                      — leave blank to auto-detect from section headers
-                    </span>
+                    {fileType === 'notes' ? (
+                      <>Topic override{' '}<span style={{ color: 'var(--text-muted)' }}>— leave blank to auto-detect from section headers</span></>
+                    ) : (
+                      <>Topic <span style={{ color: 'var(--status-warning)' }}>— required</span>{' '}<span style={{ color: 'var(--text-muted)' }}>— must already have approved knowledge chunks from notes</span></>
+                    )}
                   </span>
                   <select
                     value={chunkTopicId}
@@ -446,10 +490,24 @@ export default function AdminUploadPage() {
                       width: '100%',
                     }}
                   >
-                    <option value="">Auto-detect (recommended)</option>
+                    <option value="">{fileType === 'notes' ? 'Auto-detect (recommended)' : 'Select a topic…'}</option>
                     {topics.map(t => <option key={t.id} value={t.id}>{t.name} ({t.paper})</option>)}
                   </select>
                 </label>
+
+                {fileType === 'questions' && chunkTopicId && topicChunkCount === 0 && (
+                  <div
+                    className="flex items-start gap-2.5 mb-5 px-4 py-3 rounded-lg"
+                    style={{ background: 'rgba(224,90,90,0.08)', border: '1px solid rgba(224,90,90,0.3)' }}
+                  >
+                    <span style={{ color: '#E87878', fontSize: 14, lineHeight: '1.4' }}>⚠</span>
+                    <p className="font-sans text-xs" style={{ color: '#E87878', lineHeight: 1.6 }}>
+                      This topic has no knowledge chunks yet — extraction will not work. Upload and extract revision
+                      notes for this topic first; sample questions only match against chunks that already exist, they
+                      never create new ones.
+                    </p>
+                  </div>
+                )}
 
                 <div className="space-y-4">
                   {readyToExtract.map(f => {
@@ -459,6 +517,9 @@ export default function AdminUploadPage() {
                     const isError = state?.status === 'error'
                     const isPaused = state?.status === 'paused'
                     const notStarted = !state
+                    const needsTopic = fileType === 'questions' && !chunkTopicId
+                    const noChunksYet = fileType === 'questions' && !!chunkTopicId && topicChunkCount === 0
+                    const blocked = needsTopic || noChunksYet
 
                     return (
                       <div key={f.file.name}>
@@ -468,28 +529,39 @@ export default function AdminUploadPage() {
                           </p>
                           {notStarted && (
                             <button
-                              onClick={() => extractChunks(f.file.name, f.source_material_id!)}
+                              onClick={() => !blocked && extractChunks(f.file.name, f.source_material_id!)}
+                              disabled={blocked}
+                              title={
+                                needsTopic ? 'Select a topic above first — sample questions match against that topic\'s existing chunks'
+                                : noChunksYet ? 'This topic has no knowledge chunks yet — extract revision notes for it first'
+                                : undefined
+                              }
                               style={{
-                                background: 'var(--amber)',
-                                color: '#0A0A08',
+                                background: blocked ? 'var(--surface-3)' : 'var(--amber)',
+                                color: blocked ? 'var(--text-muted)' : '#0A0A08',
                                 fontFamily: 'var(--font-dm-sans)',
                                 fontWeight: 500,
                                 fontSize: 12,
                                 padding: '6px 14px',
                                 borderRadius: 6,
                                 border: 'none',
-                                cursor: 'pointer',
+                                cursor: blocked ? 'not-allowed' : 'pointer',
                                 whiteSpace: 'nowrap',
                                 flexShrink: 0,
                               }}
-                              className="hover:brightness-110 active:scale-[0.98] transition-all duration-150"
+                              className={blocked ? '' : 'hover:brightness-110 active:scale-[0.98] transition-all duration-150'}
                             >
-                              Extract chunks →
+                              {needsTopic ? 'Select a topic first' : noChunksYet ? 'No chunks for this topic' : 'Extract chunks →'}
                             </button>
                           )}
                           {isDone && (
                             <span className="font-sans text-xs shrink-0" style={{ color: 'var(--status-correct)' }}>
-                              ✓ {state.chunksFound} chunks saved
+                              ✓ {state.chunksFound} {fileType === 'questions' ? 'questions matched' : 'chunks saved'}
+                              {fileType === 'questions' && !!state.unmatchedFound && (
+                                <span style={{ color: 'var(--status-warning)' }}>
+                                  {' '}· {state.unmatchedFound} flagged unmatched — review manually
+                                </span>
+                              )}
                             </span>
                           )}
                           {isError && (
@@ -659,7 +731,7 @@ export default function AdminUploadPage() {
             <Step n={2} text={
               fileType === 'notes'
                 ? 'Extract Chunks — Claude reads each section and extracts every distinct legal rule as an atomic chunk.'
-                : 'Extract Chunks — Claude reads each MCQ and extracts the legal rule being tested (not the question itself).'
+                : 'Match to Knowledge Graph — Claude matches each MCQ to an existing chunk for the selected topic and records style/difficulty signal. Requires notes already extracted for that topic; never creates new chunks.'
             } />
             <Step n={3} text="Generate Questions — from the Knowledge Graph, approve chunks and generate questions. Every question is cited to its source chunk." />
           </div>

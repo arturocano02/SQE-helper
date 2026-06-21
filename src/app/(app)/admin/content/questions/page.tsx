@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import QuestionTable from '@/components/admin/QuestionTable'
+import RebalanceButton from '@/components/admin/RebalanceButton'
 import type { Question, Topic } from '@/types/database'
 import Link from 'next/link'
 
@@ -171,6 +172,8 @@ export default async function AdminQuestionsPage() {
             </div>
           </div>
         )}
+
+        <RebalanceButton />
 
         <QuestionTable
           questions={(questions ?? []) as Question[]}
