@@ -170,21 +170,21 @@ function findFrontMatterNodes(sections: DocSection[]): DocSection[] {
 }
 
 /**
- * The physical last page the Contents section occupies (e.g. 2 or 3), derived from the
- * document's own page-break markers rather than guessed from text/heading shape. This is the
- * most reliable signal there is: whatever heading-level quirks scrambled the TOC bullets into
- * the section tree, they're still all physically printed on the Contents pages — real content
- * never starts before the page after the Contents section ends. Used as the primary filter in
- * flattenToLeaves; the text-shape heuristics above are a fallback for documents with no usable
- * page-break markers.
+ * The physical last page the Contents section occupies. Deliberately NOT computed by walking
+ * the Contents node's subtree — heading-level misclassification elsewhere in a document (e.g.
+ * one chapter's title using a different Word style than the rest) can still leave stray real
+ * content nested under Contents even after the forced-level fix in classifyHeadingParagraph,
+ * and a subtree walk would then report some much later page as "front matter," silently
+ * excluding real content. Revision-note documents in this app have a short, fixed-length
+ * Contents section — using the Contents heading's OWN physical page plus one more page is a
+ * direct, deterministic answer to "where does the Contents section end" instead of an inference
+ * that can be thrown off by unrelated heading-style quirks deeper in the document.
  */
 function computeFrontMatterPageEnd(frontMatterNodes: DocSection[]): number {
   let maxPage = 0
-  function walk(section: DocSection) {
-    if (section.firstPage !== null) maxPage = Math.max(maxPage, section.firstPage)
-    section.children.forEach(walk)
+  for (const node of frontMatterNodes) {
+    if (node.firstPage !== null) maxPage = Math.max(maxPage, node.firstPage + 1)
   }
-  frontMatterNodes.forEach(walk)
   return maxPage
 }
 
