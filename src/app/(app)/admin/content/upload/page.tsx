@@ -49,6 +49,10 @@ interface ChunkExtractionState {
    *  extraction runs, since the parser discovers formatting conventions per-document rather
    *  than assuming a fixed colour scheme. */
   headingStyles?: Array<{ level: number; kind: string; sample: string; count: number; source: string }>
+  /** The document's Contents/TOC page, parsed into headings + page numbers instead of being
+   *  extracted as garbage chunks — shown so the admin can confirm the parser read the
+   *  document's intended topic/subtopic structure before extraction tags content against it. */
+  outline?: Array<{ title: string; page: number | null; level: number }>
 }
 
 export default function AdminUploadPage() {
@@ -242,6 +246,7 @@ export default function AdminUploadPage() {
                 // Latch the section list once we receive it — don't overwrite with undefined later
                 sectionsFound: ev.sections_found ?? existing.sectionsFound,
                 headingStyles: ev.heading_styles ?? existing.headingStyles,
+                outline: ev.outline ?? existing.outline,
               },
             }
           })
@@ -734,6 +739,36 @@ export default function AdminUploadPage() {
                               {state.sectionsFound.map((s, i) => (
                                 <p key={i} className="font-mono text-[10px] leading-5" style={{ color: 'var(--text-secondary)' }}>
                                   {s}
+                                </p>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+
+                        {(isRunning || isDone) && state.outline && state.outline.length > 0 && (
+                          <details className="mt-2 mb-1">
+                            <summary
+                              className="font-sans text-[11px] cursor-pointer select-none"
+                              style={{ color: 'var(--text-muted)' }}
+                            >
+                              Contents page read — {state.outline.length} headings/subheadings found, used to help tag topics below
+                            </summary>
+                            <div
+                              className="mt-1 rounded-lg overflow-y-auto"
+                              style={{
+                                maxHeight: 220,
+                                background: 'var(--surface-2)',
+                                border: '1px solid var(--surface-border)',
+                                padding: '8px 10px',
+                              }}
+                            >
+                              {state.outline.map((o, i) => (
+                                <p
+                                  key={i}
+                                  className="font-mono text-[10px] leading-5"
+                                  style={{ color: 'var(--text-secondary)', paddingLeft: Math.max(0, (o.level - 1)) * 14 }}
+                                >
+                                  {o.title}{o.page !== null ? ` — p.${o.page}` : ''}
                                 </p>
                               ))}
                             </div>

@@ -81,15 +81,113 @@ const HEADER_TO_SLUG: Record<string, string> = {
   'CRIMINAL LITIGATION':       'criminal-law',
 }
 
-function detectTopicSlug(path: string[]): string | null {
+function detectTopicSlug(path: string[], outlineTopicMap?: Map<string, string>): string | null {
   for (const part of path) {
     const upper = part.toUpperCase().trim()
     if (HEADER_TO_SLUG[upper]) return HEADER_TO_SLUG[upper]
     for (const [key, slug] of Object.entries(HEADER_TO_SLUG)) {
       if (upper.includes(key) || key.includes(upper)) return slug
     }
+    // Fall back to whatever the Contents page told us this heading belongs to — covers
+    // subtopic-level titles (e.g. "Director's duties and responsibilities") that don't
+    // appear in the static dictionary above but sit under a recognised topic in the TOC.
+    if (outlineTopicMap?.has(upper)) return outlineTopicMap.get(upper)!
   }
   return null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front matter (Contents / Table of Contents pages)
+//
+// These pages aren't real legal content — they're the heading hierarchy of the rest of the
+// document with page numbers, and the parser's heading detector (built from observed text
+// formatting, not a fixed style) often mis-reads every TOC bullet as if it were itself a real
+// heading. Rather than just discarding that, the same structure is parsed into an outline
+// (heading + page number per entry) and used to help tag the real content that follows.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Matches a "Contents" / "Table of Contents" page heading, tolerating a page number stuck
+// directly onto the title (dot-leader tab stops get stripped during text extraction, so
+// "CONTENTS .......... 3" can come through as "CONTENTS3").
+const TOC_TITLE_RE = /^\s*(table of )?contents\s*\d*\s*$/i
+
+/** True if this node is itself a Contents/Table of Contents page heading. */
+function isFrontMatterNode(section: DocSection): boolean {
+  return TOC_TITLE_RE.test(section.title.trim())
+}
+
+export interface OutlineEntry {
+  title: string
+  page: number | null
+  level: number
+  children: OutlineEntry[]
+}
+
+/** Splits a TOC entry's mashed-together "Title123" text back into title + page number. */
+function splitTitlePage(raw: string): { title: string; page: number | null } {
+  const trimmed = raw.trim()
+  const m = trimmed.match(/^(.*\D)\s*(\d+)$/)
+  if (m) return { title: m[1].trim(), page: parseInt(m[2], 10) }
+  return { title: trimmed, page: null }
+}
+
+function buildOutlineFromNode(node: DocSection): OutlineEntry[] {
+  return node.children.map(child => ({
+    ...splitTitlePage(child.title),
+    level: child.level,
+    children: buildOutlineFromNode(child),
+  }))
+}
+
+/** Finds every Contents/TOC page anywhere in the tree (doesn't descend past a match — its
+ *  children ARE the outline, not another nested front-matter page). */
+function findFrontMatterNodes(sections: DocSection[]): DocSection[] {
+  const found: DocSection[] = []
+  function walk(list: DocSection[]) {
+    for (const s of list) {
+      if (isFrontMatterNode(s)) { found.push(s); continue }
+      walk(s.children)
+    }
+  }
+  walk(sections)
+  return found
+}
+
+/** Maps every heading the Contents page mentions (topic AND subtopic level, upper-cased) to
+ *  the topic slug it falls under, by tracking which recognised topic heading we're currently
+ *  nested below as we walk down the outline. */
+function buildOutlineTopicMap(outline: OutlineEntry[]): Map<string, string> {
+  const map = new Map<string, string>()
+  function resolveOwnSlug(title: string): string | null {
+    const upper = title.toUpperCase().trim()
+    if (HEADER_TO_SLUG[upper]) return HEADER_TO_SLUG[upper]
+    for (const [key, slug] of Object.entries(HEADER_TO_SLUG)) {
+      if (upper.includes(key) || key.includes(upper)) return slug
+    }
+    return null
+  }
+  function walk(entries: OutlineEntry[], inheritedSlug: string | null) {
+    for (const entry of entries) {
+      const slug = resolveOwnSlug(entry.title) ?? inheritedSlug
+      if (slug) map.set(entry.title.toUpperCase().trim(), slug)
+      walk(entry.children, slug)
+    }
+  }
+  walk(outline, null)
+  return map
+}
+
+/** Flattens the outline tree into an ordered list for SSE transport (UI just needs order + level). */
+function flattenOutlineForTransport(entries: OutlineEntry[]): Array<{ title: string; page: number | null; level: number }> {
+  const out: Array<{ title: string; page: number | null; level: number }> = []
+  function walk(list: OutlineEntry[]) {
+    for (const e of list) {
+      out.push({ title: e.title, page: e.page, level: e.level })
+      walk(e.children)
+    }
+  }
+  walk(entries)
+  return out
 }
 
 export interface ExtractionProgress {
@@ -105,6 +203,11 @@ export interface ExtractionProgress {
    *  in this document and the level it assigned each one, so a misread hierarchy is
    *  visible before extraction runs rather than discovered after the fact. */
   heading_styles?: Array<{ level: number; kind: string; sample: string; count: number; source: string }>
+  /** Emitted alongside sections_found — the document's Contents/TOC page, parsed into a
+   *  heading + page-number outline rather than discarded outright. Used internally to help
+   *  tag content sections whose heading text alone doesn't match the static topic dictionary,
+   *  and surfaced here so the admin can see the document's expected structure up front. */
+  outline?: Array<{ title: string; page: number | null; level: number }>
   /** Questions-mode only — running count of sample questions that couldn't be matched to any
    *  existing chunk. Surfaced so the admin sees these flagged instead of them silently vanishing. */
   unmatched_found?: number
@@ -692,13 +795,27 @@ export interface BatchExtractionResult {
 }
 
 /** Full Stage 1 entry point: docx buffer → section tree, with auto-discovered headings and page tracking. */
-export async function parseDocxToSections(buffer: Buffer): Promise<{ sections: DocSection[]; headingStyles: HeadingStyleSummary[] }> {
+export async function parseDocxToSections(buffer: Buffer): Promise<{
+  sections: DocSection[]
+  headingStyles: HeadingStyleSummary[]
+  outline: OutlineEntry[]
+  outlineTopicMap: Map<string, string>
+}> {
   const bodyXml = await readDocumentXmlBody(buffer)
   const blocks = parseDocxBlocks(bodyXml)
   const paragraphs = blocks.filter((b): b is DocxParagraph => b.kind === 'paragraph')
   const model = buildHeadingStyleModel(paragraphs)
   const sections = buildSectionTreeFromBlocks(blocks, model)
-  return { sections, headingStyles: model.summary }
+
+  // Pull the outline (headings + page numbers) out of any Contents/TOC page before its bullet
+  // lines get dropped from real extraction — it's a ready-made map of every topic/subtopic the
+  // rest of the document covers, used below to tag content whose own heading text doesn't
+  // directly match the static HEADER_TO_SLUG dictionary.
+  const frontMatterNodes = findFrontMatterNodes(sections)
+  const outline = frontMatterNodes.flatMap(buildOutlineFromNode)
+  const outlineTopicMap = buildOutlineTopicMap(outline)
+
+  return { sections, headingStyles: model.summary, outline, outlineTopicMap }
 }
 
 /**
@@ -710,6 +827,10 @@ export function flattenToLeaves(sections: DocSection[]): DocSection[] {
   const leaves: DocSection[] = []
 
   function walk(section: DocSection) {
+    // Skip Contents/TOC pages entirely — neither their own text nor anything nested under
+    // them (the TOC bullet list) should ever become an extractable chunk.
+    if (isFrontMatterNode(section)) return
+
     // No minimum content length — even a single sentence is a legal rule we must not lose.
     const hasContent = section.content.trim().length > 0
     const hasChildren = section.children.length > 0
@@ -922,11 +1043,12 @@ async function extractChunksFromSection(
   client: Anthropic,
   section: DocSection,
   topicName: string,
+  outlineTopicMap?: Map<string, string>,
 ): Promise<ExtractedChunk[]> {
   const breadcrumb   = section.path.join(' > ') + (section.firstPage ? ` (p. ${section.firstPage})` : '')
   const subtopicName = section.path[1] ?? section.path[0] ?? topicName
   const sectionName  = section.path[section.path.length - 1] ?? subtopicName
-  const topicSlug    = detectTopicSlug(section.path)
+  const topicSlug    = detectTopicSlug(section.path, outlineTopicMap)
 
   if (!section.content.trim()) return []
 
@@ -1425,10 +1547,14 @@ export async function extractChunksFromDocx(
 
   let tree: DocSection[]
   let headingStyles: HeadingStyleSummary[] = []
+  let outline: OutlineEntry[] = []
+  let outlineTopicMap = new Map<string, string>()
   try {
     const parsed = await parseDocxToSections(buffer)
     tree = parsed.sections
     headingStyles = parsed.headingStyles
+    outline = parsed.outline
+    outlineTopicMap = parsed.outlineTopicMap
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     onProgress({ stage: 'error', message: 'Failed to parse document', error: msg })
@@ -1458,6 +1584,7 @@ export async function extractChunksFromDocx(
     chunks_found: 0,
     sections_found: sectionPaths,
     heading_styles: headingStyles,
+    outline: flattenOutlineForTransport(outline),
   })
 
   // ── Stage 2: Extract this batch only ────────────────────────────────────────
@@ -1477,7 +1604,7 @@ export async function extractChunksFromDocx(
     })
 
     try {
-      const chunks = await extractChunksFromSection(client, section, topicName)
+      const chunks = await extractChunksFromSection(client, section, topicName, outlineTopicMap)
       batchChunks.push(...chunks)
       // Flush this section's chunks immediately so partial progress survives a dropped connection
       if (onChunks && chunks.length > 0) {
