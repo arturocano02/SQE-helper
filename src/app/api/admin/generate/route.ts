@@ -9,9 +9,13 @@
  *   difficulty: 'easy'|'medium'|'hard'|'mixed'
  *   count_per_topic: number      // how many questions per topic (1–100)
  *   status?: 'draft'|'approved'  // default: 'draft'
- *   include_sample_questions?: boolean  // default: true. MCQ only — feeds style guide + sample-question
- *                                        // style examples into generation. Set false to generate purely
- *                                        // from the knowledge chunk text.
+ *   include_sample_questions?: boolean  // default: false. MCQ only — when true, feeds a few literal
+ *                                        // exact-text excerpts from real sample questions into the
+ *                                        // generation prompt as style references. Off by default because
+ *                                        // those exact questions are meant to be held back for later
+ *                                        // (e.g. mock exams), not leaked into generated content via the
+ *                                        // model echoing them. The synthesised style guide (paraphrased,
+ *                                        // not literal) is always used regardless of this flag.
  * }
  *
  * SSE events:
@@ -211,7 +215,7 @@ export async function POST(request: Request) {
     count_per_topic = 10,
     status: targetStatus = 'draft',
     content_type = 'mcq',
-    include_sample_questions: includeSampleQuestions = true,
+    include_sample_questions: includeSampleQuestions = false,
   } = body as {
     topic_ids: string[]
     difficulty: 'easy' | 'medium' | 'hard' | 'mixed'
@@ -308,8 +312,11 @@ export async function POST(request: Request) {
             .map(x => x.c)
             .slice(0, clampedCount * 2)
 
-          // Per-topic sample-question style references — used as tone/structure inspiration only.
-          // Skipped entirely if the admin has unticked "Use sample questions as style reference".
+          // Per-topic sample-question style references — literal exact-text excerpts from real
+          // sample questions. Only fetched if the admin has explicitly opted in, since these
+          // questions are meant to be held back (e.g. for mock exams) rather than risk being
+          // echoed into generated content. The synthesised style guide below is unaffected by
+          // this flag — it's paraphrased, not literal, so it's always safe to use.
           let styleExamples: string[] = []
           if (includeSampleQuestions && content_type === 'mcq') {
             const { data: styleRows } = await admin
@@ -322,7 +329,6 @@ export async function POST(request: Request) {
               .map(r => (r as { exact_source_quote: string | null }).exact_source_quote)
               .filter((s): s is string => !!s)
           }
-          const effectiveStyleGuide = includeSampleQuestions ? topic.question_style_guide : null
 
           const topicRows: Array<Record<string, unknown>> = []
           let chunkIndex = 0
@@ -363,7 +369,7 @@ export async function POST(request: Request) {
               continue
             }
 
-            const q = await generateQuestion(chunk.rule_text, chunk.context_text, topic.name, diff, styleExamples, effectiveStyleGuide)
+            const q = await generateQuestion(chunk.rule_text, chunk.context_text, topic.name, diff, styleExamples, topic.question_style_guide)
             if (!q) continue
 
             const resolvedTopicId = slugToId.get(q.topic_slug) ?? topic.id

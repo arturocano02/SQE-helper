@@ -51,7 +51,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
   const [difficulty, setDifficulty] = useState<'mixed' | 'easy' | 'medium' | 'hard'>('mixed')
   const [countPerTopic, setCountPerTopic] = useState(10)
   const [targetStatus, setTargetStatus] = useState<'draft' | 'approved'>('draft')
-  const [includeSampleQuestions, setIncludeSampleQuestions] = useState(true)
+  const [includeSampleQuestions, setIncludeSampleQuestions] = useState(false)
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState<ProgressEvent[]>([])
   const [done, setDone] = useState(false)
@@ -521,10 +521,10 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
                       className="font-sans text-sm font-medium"
                       style={{ color: includeSampleQuestions ? 'var(--amber-text)' : 'var(--text-primary)' }}
                     >
-                      Use sample questions as style reference
+                      Feed exact sample questions into generation
                     </p>
                     <p className="font-sans text-[10px] mt-0.5 leading-tight" style={{ color: 'var(--text-muted)' }}>
-                      Lets the generator see a few real sample questions and the style guide for tone and difficulty calibration — never copied verbatim. Turn off to generate purely from the knowledge chunk text.
+                      Off by default — keeps the literal sample-paper questions held back (e.g. for mock exams) instead of risking them being echoed into generated content. The style guide (paraphrased patterns, tone, difficulty calibration) is always applied regardless of this setting.
                     </p>
                   </div>
                 </label>
