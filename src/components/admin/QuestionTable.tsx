@@ -97,8 +97,18 @@ export default function QuestionTable({ questions: initialQuestions, topics }: Q
         alert(`Delete failed: ${body?.error ?? res.statusText}`)
         return
       }
-      setQuestions(qs => qs.filter(q => !selected.has(q.id)))
+      const { archived = 0, archived_ids = [] }: { deleted?: number; archived?: number; archived_ids?: string[] } =
+        await res.json().catch(() => ({}))
+      const archivedSet = new Set(archived_ids)
+      setQuestions(qs =>
+        qs
+          .filter(q => !selected.has(q.id) || archivedSet.has(q.id))
+          .map(q => archivedSet.has(q.id) ? { ...q, status: 'archived' as QuestionStatus } : q)
+      )
       setSelected(new Set())
+      if (archived > 0) {
+        alert(`${archived} question${archived !== 1 ? 's' : ''} had answer history and were archived instead of deleted, to avoid breaking students' past results.`)
+      }
       // Same router cache bust as bulkApprove — without this, navigating back to the
       // dashboard can show the deleted questions in its counts/lists for up to 30s.
       router.refresh()

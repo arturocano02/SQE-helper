@@ -70,7 +70,15 @@ export async function PATCH(request: Request) {
   return NextResponse.json({ updated: ids.length })
 }
 
-// DELETE — permanently delete selected questions
+// DELETE — permanently delete selected questions where safe; archive the rest.
+//
+// question_history (every answer ever given) and user_question_srs (per-user SRS state)
+// both have a foreign key to questions(id) with no ON DELETE clause, so Postgres blocks a
+// hard delete the moment a real student has answered that question — deleting it would
+// either corrupt their history or silently destroy the record of how they did. Rather than
+// surfacing that as a raw FK error, any question with answer history attached is archived
+// instead (status: 'archived' — already hidden from users, same as the existing approve/
+// archive workflow) and only truly unanswered questions are hard-deleted.
 export async function DELETE(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -83,8 +91,34 @@ export async function DELETE(request: Request) {
   if (!ids?.length) return NextResponse.json({ error: 'No IDs provided' }, { status: 400 })
 
   const admin = createAdminClient()
-  const { error } = await admin.from('questions').delete().in('id', ids)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ deleted: ids.length })
+  const { data: historyRows, error: historyErr } = await admin
+    .from('question_history')
+    .select('question_id')
+    .in('question_id', ids)
+
+  if (historyErr) return NextResponse.json({ error: historyErr.message }, { status: 500 })
+
+  const answeredIds = new Set((historyRows ?? []).map(r => (r as { question_id: string }).question_id))
+  const deletableIds = ids.filter(id => !answeredIds.has(id))
+  const archiveIds = ids.filter(id => answeredIds.has(id))
+
+  if (archiveIds.length > 0) {
+    const { error: archiveErr } = await admin
+      .from('questions')
+      .update({ status: 'archived' })
+      .in('id', archiveIds)
+    if (archiveErr) return NextResponse.json({ error: archiveErr.message }, { status: 500 })
+  }
+
+  if (deletableIds.length > 0) {
+    const { error: deleteErr } = await admin.from('questions').delete().in('id', deletableIds)
+    if (deleteErr) return NextResponse.json({ error: deleteErr.message }, { status: 500 })
+  }
+
+  return NextResponse.json({
+    deleted: deletableIds.length,
+    archived: archiveIds.length,
+    archived_ids: archiveIds,
+  })
 }
