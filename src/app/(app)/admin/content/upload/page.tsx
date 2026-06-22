@@ -99,6 +99,104 @@ export default function AdminUploadPage() {
     })
   }, [])
 
+  // Load previously-uploaded source_materials on mount. Without this, navigating away mid-
+  // extraction (or just refreshing the page) loses all visibility into a file's progress —
+  // the only state that existed was populated by handleUpload() during the current browser
+  // session, so a paused/in-progress document looked like it had vanished even though every
+  // chunk extracted so far was safely persisted in the DB. This re-hydrates uploadedFiles,
+  // chunkExtraction, and outlinePhase from the real DB state so Resume works without re-
+  // uploading anything. A ?resume=<source_material_id> query param (used by the Resume link
+  // on the /admin dashboard) just makes sure that file's extraction starts automatically once
+  // loaded, and switches fileType to match it if it's a sample-questions file.
+  useEffect(() => {
+    const resumeId = new URLSearchParams(window.location.search).get('resume')
+
+    createClient()
+      .from('source_materials')
+      .select('id, file_name, file_type, chunk_status, chunks_extracted, chunk_error, chunk_sections_done, chunk_sections_total, chunk_outline, chunk_outline_confirmed, created_at')
+      .order('created_at', { ascending: false })
+      .limit(50)
+      .then(({ data, error }) => {
+        if (error || !data || data.length === 0) return
+
+        setUploadedFiles(prev => {
+          const known = new Set(prev.map(p => p.source_material_id))
+          const loaded: UploadedFile[] = data
+            .filter(m => !known.has(m.id))
+            .map(m => ({
+              // No real File object exists for a row loaded from the DB — this stand-in only
+              // needs `.name`, the one property every render path in this file actually reads.
+              file: { name: m.file_name } as File,
+              status: 'done',
+              source_material_id: m.id,
+              chars_extracted: 0,
+              error: null,
+            }))
+          return [...loaded, ...prev]
+        })
+
+        setChunkExtraction(prev => {
+          const next = { ...prev }
+          for (const m of data) {
+            if (next[m.file_name]) continue // don't clobber state from an upload in this same session
+            if (m.chunk_status === 'extracted') {
+              next[m.file_name] = { status: 'done', message: '', chunksFound: m.chunks_extracted }
+            } else if (m.chunk_status === 'failed' && !m.chunks_extracted) {
+              next[m.file_name] = { status: 'error', message: m.chunk_error ?? 'Extraction failed' }
+            } else if (m.chunk_status === 'pending' || m.chunk_status === 'extracting' || m.chunk_status === 'failed') {
+              // 'extracting' rows are included here too — if that run actually died, the
+              // server's stale-lock takeover (90s) will reclaim it on the next batch; if it's
+              // still alive, the 409 conflict-wait logic in extractChunks handles that safely.
+              if ((m.chunks_extracted ?? 0) > 0 || (m.chunk_sections_done ?? 0) > 0) {
+                next[m.file_name] = {
+                  status: 'paused',
+                  message: '',
+                  chunksFound: m.chunks_extracted,
+                  sectionsDone: m.chunk_sections_done ?? undefined,
+                  sectionsTotal: m.chunk_sections_total ?? undefined,
+                }
+              }
+              // else: leave unset — shows the normal "Extract chunks →" / outline-read flow
+            }
+          }
+          return next
+        })
+
+        setOutlinePhase(prev => {
+          const next = { ...prev }
+          for (const m of data) {
+            if (next[m.file_name]) continue
+            if (m.chunk_outline_confirmed && m.chunk_outline) {
+              next[m.file_name] = {
+                status: 'confirmed',
+                entries: m.chunk_outline.entries,
+                frontMatterPageEnd: m.chunk_outline.frontMatterPageEnd,
+              }
+            } else if (m.chunk_outline) {
+              next[m.file_name] = {
+                status: 'ready',
+                entries: m.chunk_outline.entries,
+                frontMatterPageEnd: m.chunk_outline.frontMatterPageEnd,
+              }
+            }
+          }
+          return next
+        })
+
+        if (resumeId) {
+          const resumeMaterial = data.find(m => m.id === resumeId)
+          if (resumeMaterial) {
+            if (resumeMaterial.file_type === 'questions') setFileType('questions')
+            // Give state updates above a tick to land before kicking off the loop.
+            setTimeout(() => extractChunks(resumeMaterial.file_name, resumeMaterial.id), 300)
+          }
+        }
+      })
+    // Intentionally run once on mount only — re-running on every chunkExtraction/outlinePhase
+    // change would re-fetch and could stomp in-progress local state with stale DB reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     if (fileType !== 'questions' || !chunkTopicId) {
       setTopicChunkCount(null)

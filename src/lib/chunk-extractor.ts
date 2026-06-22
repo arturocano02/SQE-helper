@@ -96,6 +96,45 @@ function detectTopicSlug(path: string[], outlineTopicMap?: Map<string, string>):
   return null
 }
 
+// The 12 real SQE1 topic slugs (deduped from HEADER_TO_SLUG's values) — kept derived rather
+// than hand-duplicated so it can never drift out of sync with the dictionary above.
+const KNOWN_TOPIC_SLUGS = Array.from(new Set(Object.values(HEADER_TO_SLUG)))
+
+/**
+ * AI fallback for topic detection, used only when detectTopicSlug() finds no match.
+ *
+ * Why this exists: HEADER_TO_SLUG and outlineTopicMap both only recognise the exact 12 SQE1
+ * paper/topic names. Revision-note documents very often organise their own chapter headings
+ * around narrower real-world categories instead (e.g. "TRADITIONAL PARTNERSHIPS",
+ * "BUSINESS MODELS", "FORMATION OF A COMPANY" — none of which literally contain the string
+ * "Business Law and Practice"), and a TOC page typically only lists those same narrower
+ * headings, never re-stating the broader SQE1 paper name above them. Both lookups then
+ * legitimately return null for the entire chapter, and — because a single multi-topic
+ * document like a full FLK1 summary can't have one fallback topic preselected for the whole
+ * file — every chunk under that chapter was previously dropped silently in flushChunks with
+ * zero error surfaced. This call only fires once per chapter heading (cached by the caller)
+ * and asks Haiku to do the semantic match a fixed dictionary can't.
+ */
+async function classifyTopicSlugWithAI(
+  client: Anthropic,
+  breadcrumb: string,
+  sampleText: string,
+): Promise<string | null> {
+  try {
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 50,
+      system: `You map a UK SQE1 law revision-notes heading to exactly one of these 12 topic slugs:\n${KNOWN_TOPIC_SLUGS.join(', ')}\n\nReturn ONLY the slug, nothing else. If genuinely none fit, return "none".`,
+      messages: [{ role: 'user', content: `Heading: ${breadcrumb}\n\nSample content: ${sampleText.slice(0, 400)}` }],
+    })
+    const raw = message.content[0].type === 'text' ? message.content[0].text.trim().toLowerCase() : 'none'
+    return KNOWN_TOPIC_SLUGS.includes(raw) ? raw : null
+  } catch (err) {
+    console.error(`[chunk-extractor] AI topic-slug fallback failed for "${breadcrumb}":`, err)
+    return null
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Front matter (Contents / Table of Contents pages)
 //
@@ -1216,18 +1255,37 @@ async function classifyChunkBatch(
   return [...first, ...second]
 }
 
-async function extractChunksFromSection(
+// Exported for the /api/admin/chunks/backfill recovery route, which needs to re-run extraction
+// for individual leaf sections that were already visited once but whose chunks never made it
+// into the DB (see that route's header comment for why).
+export async function extractChunksFromSection(
   client: Anthropic,
   section: DocSection,
   topicName: string,
   outlineTopicMap?: Map<string, string>,
+  // Cached per chapter heading (path[1] or path[0]) across a whole extraction run, so the AI
+  // fallback below only ever costs one Haiku call per chapter, not one per leaf section.
+  topicSlugCache?: Map<string, string | null>,
 ): Promise<ExtractedChunk[]> {
   const breadcrumb   = section.path.join(' > ') + (section.firstPage ? ` (p. ${section.firstPage})` : '')
   const subtopicName = section.path[1] ?? section.path[0] ?? topicName
   const sectionName  = section.path[section.path.length - 1] ?? subtopicName
-  const topicSlug    = detectTopicSlug(section.path, outlineTopicMap)
 
   if (!section.content.trim()) return []
+
+  let topicSlug = detectTopicSlug(section.path, outlineTopicMap)
+
+  if (!topicSlug) {
+    // The static dictionary + TOC-derived map both missed — fall back to Haiku, cached by
+    // chapter so a long chapter with many leaf sections only triggers this once.
+    const chapterKey = (section.path[1] ?? section.path[0] ?? breadcrumb).toUpperCase().trim()
+    if (topicSlugCache?.has(chapterKey)) {
+      topicSlug = topicSlugCache.get(chapterKey) ?? null
+    } else {
+      topicSlug = await classifyTopicSlugWithAI(client, breadcrumb, section.content)
+      topicSlugCache?.set(chapterKey, topicSlug)
+    }
+  }
 
   // ── Step 1: Deterministic splitting — verbatim, 100% coverage, in doc order ──
   const units = splitContentIntoUnits(section.content)
@@ -1768,6 +1826,10 @@ export async function extractChunksFromDocx(
 
   // ── Stage 2: Extract this batch only ────────────────────────────────────────
   const batchChunks: ExtractedChunk[] = []
+  // Cached per chapter heading across this whole batch (and re-created fresh on the next
+  // batch call) — keeps the AI topic-slug fallback to one Haiku call per chapter, not one
+  // per leaf section within it.
+  const topicSlugCache = new Map<string, string | null>()
 
   for (let i = 0; i < batchLeaves.length; i++) {
     const absoluteIndex = offset + i
@@ -1783,7 +1845,7 @@ export async function extractChunksFromDocx(
     })
 
     try {
-      const chunks = await extractChunksFromSection(client, section, topicName, outlineTopicMap)
+      const chunks = await extractChunksFromSection(client, section, topicName, outlineTopicMap, topicSlugCache)
       batchChunks.push(...chunks)
       // Flush this section's chunks immediately so partial progress survives a dropped connection
       if (onChunks && chunks.length > 0) {

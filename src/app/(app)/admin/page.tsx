@@ -437,7 +437,7 @@ export default async function AdminDashboardPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--surface-border)' }}>
-                    {['File', 'Type', 'Status', 'Progress', 'Questions', 'Uploaded', ''].map(h => (
+                    {['File', 'Type', 'Status', 'Progress', 'Chunks', 'Uploaded', ''].map(h => (
                       <th
                         key={h}
                         className="p-4 text-left font-normal font-sans text-xs uppercase tracking-wider"

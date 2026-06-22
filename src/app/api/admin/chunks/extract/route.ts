@@ -195,6 +195,11 @@ export async function POST(request: Request) {
       let totalInserted = seedInserted
       let sortIndex = seedInserted
       let totalUnmatched = seedUnmatched
+      // Chunks that survived deterministic splitting + classification but still couldn't be
+      // resolved to a topic (the AI fallback in chunk-extractor.ts itself failed/errored) used
+      // to be dropped here with zero trace. Now counted and surfaced via SSE so a real gap is
+      // visible to the admin immediately instead of silently vanishing.
+      let totalUncategorized = 0
 
       /**
        * Ensure subtopic exists and return its id. Cached in subtopicMap.
@@ -227,7 +232,11 @@ export async function POST(request: Request) {
         const rows = await Promise.all(
           chunks.map(async (c) => {
             const resolvedTopicId = (c.topic_slug ? slugToTopicId.get(c.topic_slug) : null) ?? fallbackTopicId
-            if (!resolvedTopicId) return null
+            if (!resolvedTopicId) {
+              console.error(`${logTag} dropping chunk — no topic could be resolved (section "${c.source_section}"): "${c.rule_text.slice(0, 80)}…"`)
+              totalUncategorized++
+              return null
+            }
             const subtopicId = await ensureSubtopic(resolvedTopicId, c.subtopic_name)
             return {
               topic_id: resolvedTopicId,
@@ -371,12 +380,13 @@ export async function POST(request: Request) {
             chunk_sections_total: result.totalUnits,
           }).eq('id', source_material_id)
 
-          console.log(`${logTag} batch_done — ${result.unitsDone}/${result.totalUnits} sections, ${totalInserted} ${resultNoun}`)
+          console.log(`${logTag} batch_done — ${result.unitsDone}/${result.totalUnits} sections, ${totalInserted} ${resultNoun}${totalUncategorized > 0 ? `, ${totalUncategorized} DROPPED (no topic resolved)` : ''}`)
           send({
             stage: 'batch_done',
             message: useQuestionsMode && totalUnmatched > 0
               ? `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} ${resultNoun}, ${totalUnmatched} unmatched (flagged) so far`
-              : `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} ${resultNoun} so far`,
+              : `Batch complete — ${result.unitsDone} / ${result.totalUnits} processed, ${totalInserted} ${resultNoun} so far` +
+                (totalUncategorized > 0 ? ` — ⚠ ${totalUncategorized} chunks dropped (couldn't resolve a topic)` : ''),
             sections_total: result.totalUnits,
             sections_done: result.unitsDone,
             chunks_found: totalInserted,
@@ -405,7 +415,7 @@ export async function POST(request: Request) {
           return
         }
 
-        console.log(`${logTag} done — ${totalInserted} ${resultNoun} total, ${totalUnmatched} unmatched`)
+        console.log(`${logTag} done — ${totalInserted} ${resultNoun} total, ${totalUnmatched} unmatched${totalUncategorized > 0 ? `, ${totalUncategorized} DROPPED (no topic resolved)` : ''}`)
         await admin.from('source_materials').update({
           chunk_status: 'extracted',
           chunks_extracted: totalInserted,
@@ -417,7 +427,7 @@ export async function POST(request: Request) {
           stage: 'done',
           message: useQuestionsMode && totalUnmatched > 0
             ? `Done — ${totalInserted} ${resultNoun}, ${totalUnmatched} questions flagged as unmatched (no existing chunk fit — review manually)`
-            : `Done — ${totalInserted} ${resultNoun}`,
+            : `Done — ${totalInserted} ${resultNoun}` + (totalUncategorized > 0 ? ` — ⚠ ${totalUncategorized} chunks dropped (couldn't resolve a topic, check server logs)` : ''),
           chunks_found: totalInserted,
           sections_done: totalInserted,
           unmatched_found: useQuestionsMode ? totalUnmatched : undefined,

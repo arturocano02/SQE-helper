@@ -238,6 +238,13 @@ export interface SourceMaterial {
   chunks_extracted: number
   chunk_error: string | null
   file_hash: string | null
+  // How many leaf sections (notes mode) or question-batches (questions mode) have been
+  // processed / exist in total — the checkpoint the extract route resumes from. Already
+  // tracked in the DB and updated after every batch; surfaced here so the admin dashboard
+  // and upload page can show real progress without re-running anything.
+  chunk_sections_done: number | null
+  chunk_sections_total: number | null
+  chunk_match_unmatched: number | null
   // Phase 1 of notes-mode extraction: the Contents/TOC page parsed into headings + page
   // numbers, persisted so the admin can review it before Phase 2 (real chunk extraction) runs.
   chunk_outline: { entries: ChunkOutlineEntry[]; frontMatterPageEnd: number } | null
