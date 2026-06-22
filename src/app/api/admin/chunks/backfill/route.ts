@@ -29,15 +29,11 @@
 import { NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { parseDocxToSections, flattenToLeaves, extractChunksFromSection } from '@/lib/chunk-extractor'
+import { parseDocxToSections, flattenToLeaves, extractChunksFromSection, breadcrumbFor } from '@/lib/chunk-extractor'
 
 export const maxDuration = 280
 
 const DEFAULT_BATCH_SIZE = 4
-
-function breadcrumbFor(section: { path: string[]; firstPage: number | null }): string {
-  return section.path.join(' > ') + (section.firstPage ? ` (p. ${section.firstPage})` : '')
-}
 
 export async function POST(request: Request) {
   const supabase = await createClient()

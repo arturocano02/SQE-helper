@@ -59,6 +59,24 @@ interface ChunkExtractionState {
   verify?: { status: 'running' | 'done' | 'error'; sectionsTotal?: number; sectionsCovered?: number; charCoveragePct?: number; missingCount?: number; thinCount?: number; message?: string }
 }
 
+/** One section's original text next to what actually got saved as chunks — the raw material
+ *  for the "first 5 pages" manual read-through, requested directly so gaps/rewording can be
+ *  caught by eye instead of only trusting coverage percentages. */
+interface PreviewSection {
+  section: string
+  page: number | null
+  original_content: string
+  original_chars: number
+  chunks: Array<{ rule_text: string; rule_type: string }>
+  chunk_chars: number
+}
+
+type PreviewState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'done'; sections: PreviewSection[]; usedPageNumbers: boolean }
+  | { status: 'error'; message: string }
+
 /**
  * Phase 1 state for notes-mode .docx files — read-and-confirm the Contents page BEFORE any
  * real chunk extraction is allowed to run, so TOC bullet lines never reach a Claude extraction
@@ -81,6 +99,7 @@ export default function AdminUploadPage() {
   const [paperFilter, setPaperFilter] = useState<'all' | 'FLK1' | 'FLK2'>('all')
   const [chunkExtraction, setChunkExtraction] = useState<Record<string, ChunkExtractionState>>({})
   const [outlinePhase, setOutlinePhase] = useState<Record<string, OutlinePhaseState>>({})
+  const [preview, setPreview] = useState<Record<string, PreviewState>>({})
   const [topics, setTopics] = useState<Topic[]>([])
   const [wiping, setWiping] = useState(false)
   // null = not checked yet, 0 = checked and genuinely empty, >0 = has chunks.
@@ -97,6 +116,10 @@ export default function AdminUploadPage() {
   // kicks in, and now there are two (or more) zombie loops fighting forever, which looks exactly
   // like "pausing and resuming on its own" even though the admin isn't clicking anything.
   const activeExtractions = useRef<Set<string>>(new Set())
+  // Set by the manual Pause button. Checked once per batch boundary (the only safe place to
+  // stop — mid-batch the server has already committed whatever it committed) rather than
+  // aborting the in-flight fetch, so nothing partially-written is left in a weird state.
+  const pauseRequested = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     createClient().from('topics').select('*').order('sort_order').then(({ data }) => {
@@ -500,6 +523,18 @@ export default function AdminUploadPage() {
         stage = await runOneBatch(fileName, sourceMaterialId)
         if (stage !== 'error') consecutiveErrors = 0
         if (stage !== 'conflict') consecutiveConflicts = 0
+
+        // Manual pause — only honoured between batches (see ref comment above), so whatever
+        // the batch that just finished saved is safe; nothing is left half-written.
+        if (stage === 'batch_done' && pauseRequested.current.has(fileName)) {
+          pauseRequested.current.delete(fileName)
+          console.log(`[extract] "${fileName}" — paused by user request`)
+          setChunkExtraction(prev => ({
+            ...prev,
+            [fileName]: { ...prev[fileName], status: 'paused', message: 'Paused — click Resume to continue from where it left off.' },
+          }))
+          return
+        }
       }
 
       if (stage === 'conflict') {
@@ -573,6 +608,27 @@ export default function AdminUploadPage() {
         ...prev,
         [fileName]: { ...prev[fileName], verify: { status: 'error', message: err instanceof Error ? err.message : 'Verify failed' } },
       }))
+    }
+  }
+
+  /** Loads the first ~5 pages' worth of sections, original text next to what got saved as
+   *  chunks, so the admin can read it directly rather than only trusting coverage percentages. */
+  async function loadPreview(fileName: string, sourceMaterialId: string) {
+    setPreview(prev => ({ ...prev, [fileName]: { status: 'loading' } }))
+    try {
+      const res = await fetch('/api/admin/chunks/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_material_id: sourceMaterialId, page_limit: 5 }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        setPreview(prev => ({ ...prev, [fileName]: { status: 'error', message: json?.error ?? 'Preview failed' } }))
+        return
+      }
+      setPreview(prev => ({ ...prev, [fileName]: { status: 'done', sections: json.sections ?? [], usedPageNumbers: !!json.used_page_numbers } }))
+    } catch (err) {
+      setPreview(prev => ({ ...prev, [fileName]: { status: 'error', message: err instanceof Error ? err.message : 'Preview failed' } }))
     }
   }
 
@@ -1041,9 +1097,29 @@ export default function AdminUploadPage() {
                             </div>
                           )}
                           {isRunning && (
-                            <span className="font-sans text-xs shrink-0" style={{ color: 'var(--amber-text)' }}>
-                              {state.chunksFound ?? 0} found
-                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-sans text-xs" style={{ color: 'var(--amber-text)' }}>
+                                {state.chunksFound ?? 0} found
+                              </span>
+                              <button
+                                onClick={() => pauseRequested.current.add(f.file.name)}
+                                title="Stops after the current batch finishes — nothing saved is lost, click Resume later to continue"
+                                style={{
+                                  fontSize: 11,
+                                  color: 'var(--text-secondary)',
+                                  fontFamily: 'var(--font-dm-sans)',
+                                  border: '1px solid var(--surface-border)',
+                                  padding: '4px 10px',
+                                  borderRadius: 6,
+                                  background: 'transparent',
+                                  cursor: 'pointer',
+                                  whiteSpace: 'nowrap',
+                                }}
+                                className="hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150"
+                              >
+                                Pause
+                              </button>
+                            </div>
                           )}
                         </div>
 
@@ -1244,8 +1320,103 @@ export default function AdminUploadPage() {
                             >
                               Review in Knowledge Graph →
                             </Link>
+                            {fileType === 'notes' && /\.docx$/i.test(f.file.name) && (preview[f.file.name]?.status ?? 'idle') === 'idle' && (
+                              <button
+                                onClick={() => loadPreview(f.file.name, f.source_material_id!)}
+                                style={{
+                                  fontSize: 12,
+                                  color: 'var(--text-secondary)',
+                                  fontFamily: 'var(--font-dm-sans)',
+                                  border: '1px solid var(--surface-border)',
+                                  padding: '5px 12px',
+                                  borderRadius: 6,
+                                  background: 'transparent',
+                                  cursor: 'pointer',
+                                }}
+                                className="hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150"
+                              >
+                                Preview first 5 pages →
+                              </button>
+                            )}
                           </div>
                         )}
+
+                        {preview[f.file.name]?.status === 'loading' && (
+                          <p className="font-sans text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                            ⟳ Loading original text and saved chunks for the first 5 pages…
+                          </p>
+                        )}
+                        {preview[f.file.name]?.status === 'error' && (
+                          <p className="font-sans text-[11px] mt-2" style={{ color: 'var(--status-wrong)' }}>
+                            Preview failed — {(preview[f.file.name] as { message: string }).message}
+                          </p>
+                        )}
+                        {preview[f.file.name]?.status === 'done' && (() => {
+                          const p = preview[f.file.name] as { status: 'done'; sections: PreviewSection[]; usedPageNumbers: boolean }
+                          return (
+                            <div className="mt-3 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <p className="font-sans text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                  {p.sections.length} section{p.sections.length === 1 ? '' : 's'}
+                                  {p.usedPageNumbers ? ' on pages 1–5' : ' (no page numbers detected — showing first sections in document order)'}
+                                  {' '}— original text on the left of each block, what got saved as chunks below it.
+                                </p>
+                                <button
+                                  onClick={() => setPreview(prev => ({ ...prev, [f.file.name]: { status: 'idle' } }))}
+                                  style={{ fontSize: 11, color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
+                                >
+                                  Hide
+                                </button>
+                              </div>
+                              <div
+                                className="rounded-lg overflow-y-auto space-y-3"
+                                style={{ maxHeight: 480, background: 'var(--surface-2)', border: '1px solid var(--surface-border)', padding: 12 }}
+                              >
+                                {p.sections.map((s, i) => {
+                                  const zeroChunks = s.chunks.length === 0
+                                  const looksThin = s.original_chars > 200 && s.chunk_chars < s.original_chars * 0.6
+                                  return (
+                                    <div
+                                      key={i}
+                                      className="rounded-md"
+                                      style={{
+                                        border: `1px solid ${zeroChunks ? 'rgba(248,113,113,0.4)' : looksThin ? 'rgba(251,191,36,0.4)' : 'var(--surface-border)'}`,
+                                        padding: 10,
+                                      }}
+                                    >
+                                      <p className="font-mono text-[10px] mb-1.5" style={{ color: 'var(--amber-text)' }}>
+                                        {s.section}
+                                        {zeroChunks && <span style={{ color: 'var(--status-wrong)' }}> — ⚠ NO CHUNKS SAVED</span>}
+                                        {!zeroChunks && looksThin && <span style={{ color: 'var(--status-warning)' }}> — ⚠ thin ({s.chunk_chars}/{s.original_chars} chars)</span>}
+                                      </p>
+                                      <p className="font-sans text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>Original text ({s.original_chars} chars):</p>
+                                      <pre
+                                        className="font-mono text-[10px] whitespace-pre-wrap mb-2"
+                                        style={{ color: 'var(--text-secondary)', maxHeight: 120, overflowY: 'auto', background: 'var(--surface-1)', borderRadius: 4, padding: 6 }}
+                                      >
+                                        {s.original_content}
+                                      </pre>
+                                      <p className="font-sans text-[10px] mb-0.5" style={{ color: 'var(--text-muted)' }}>
+                                        Saved as {s.chunks.length} chunk{s.chunks.length === 1 ? '' : 's'} ({s.chunk_chars} chars):
+                                      </p>
+                                      {s.chunks.length > 0 ? (
+                                        <ol className="space-y-1">
+                                          {s.chunks.map((c, ci) => (
+                                            <li key={ci} className="font-mono text-[10px]" style={{ color: 'var(--text-primary)', background: 'var(--surface-1)', borderRadius: 4, padding: 6 }}>
+                                              [{c.rule_type}] {c.rule_text}
+                                            </li>
+                                          ))}
+                                        </ol>
+                                      ) : (
+                                        <p className="font-mono text-[10px]" style={{ color: 'var(--status-wrong)' }}>(nothing — this section has zero saved chunks)</p>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })()}
                       </div>
                     )
                   })}

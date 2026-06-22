@@ -19,7 +19,7 @@
  *
  * Response: {
  *   sections_total, sections_covered, sections_missing, missing_sections: string[],
- *   thin_sections: Array<{ section, leaf_chars, chunk_chars }>,   // covered but <20% captured
+ *   thin_sections: Array<{ section, leaf_chars, chunk_chars }>,   // covered but <60% captured
  *   chars_total, chars_captured, char_coverage_pct,
  *   by_chapter: Array<{ chapter, sections_total, sections_covered }>,
  * }
@@ -27,13 +27,9 @@
 
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { parseDocxToSections, flattenToLeaves } from '@/lib/chunk-extractor'
+import { parseDocxToSections, flattenToLeaves, breadcrumbFor } from '@/lib/chunk-extractor'
 
 export const maxDuration = 60
-
-function breadcrumbFor(section: { path: string[]; firstPage: number | null }): string {
-  return section.path.join(' > ') + (section.firstPage ? ` (p. ${section.firstPage})` : '')
-}
 
 export async function POST(request: Request) {
   const supabase = await createClient()
@@ -105,10 +101,13 @@ export async function POST(request: Request) {
       chapterStats.covered++
       const chunkChars = chunks.reduce((sum, c) => sum + c.rule_text.length + (c.context_text?.length ?? 0), 0)
       charsCaptured += chunkChars
-      // A chunk's rule_text is a distilled rule, not a verbatim copy, so it will always be
-      // shorter than the source prose — 20% is a heuristic floor for "suspiciously thin",
-      // not an expectation of near-1:1 length.
-      if (leafChars > 200 && chunkChars < leafChars * 0.2) {
+      // rule_text is the VERBATIM source unit (splitContentIntoUnits just splits on blank
+      // lines / list items — it never rewrites or summarises), so a fully-captured section
+      // should land close to 100% of leafChars, not some fraction of it. The only legitimate
+      // shrinkage is: blank-line whitespace collapsed between blocks, and fragments under the
+      // 5/10-char noise floor in splitContentIntoUnits being dropped on purpose. 60% is the
+      // floor below which that's no longer a plausible explanation and real content loss is.
+      if (leafChars > 200 && chunkChars < leafChars * 0.6) {
         thinSections.push({ section: breadcrumb, leaf_chars: leafChars, chunk_chars: chunkChars })
       }
     }

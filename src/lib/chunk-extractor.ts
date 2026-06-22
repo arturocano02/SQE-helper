@@ -1034,6 +1034,17 @@ export async function parseDocxToSections(buffer: Buffer): Promise<{
  * placed it in the tree. The text-shape checks below remain as a fallback for documents where no
  * usable page-break markers were found (frontMatterPageEnd === 0).
  */
+/**
+ * Canonical breadcrumb for a leaf section — this exact string is what `source_section` is
+ * stored as on every knowledge_chunk row, and is how every recovery/verification route
+ * (backfill, verify, preview) re-matches a freshly re-parsed leaf back to its saved chunks.
+ * Was previously copy-pasted in three separate route files; centralised here so a future
+ * change to the format can't silently desync one of those copies from the others.
+ */
+export function breadcrumbFor(section: { path: string[]; firstPage: number | null }): string {
+  return section.path.join(' > ') + (section.firstPage ? ` (p. ${section.firstPage})` : '')
+}
+
 export function flattenToLeaves(sections: DocSection[], frontMatterPageEnd = 0): DocSection[] {
   const leaves: DocSection[] = []
 
@@ -1107,7 +1118,10 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
  * Pure list    → one unit per list item (each stands alone as a rule/exception)
  * Mixed/prose  → one unit per paragraph block (prose provides context for any list beneath it)
  */
-function splitContentIntoUnits(content: string): string[] {
+// Exported for unit tests (chunk-extractor.test.ts) and for any route that needs to recompute
+// units outside the main extraction flow — this is the single function responsible for the
+// "100% coverage" guarantee, so it must be directly testable on its own, without a real docx.
+export function splitContentIntoUnits(content: string): string[] {
   const units: string[] = []
 
   // Work block by block (blank lines separate blocks)
@@ -1267,7 +1281,7 @@ export async function extractChunksFromSection(
   // fallback below only ever costs one Haiku call per chapter, not one per leaf section.
   topicSlugCache?: Map<string, string | null>,
 ): Promise<ExtractedChunk[]> {
-  const breadcrumb   = section.path.join(' > ') + (section.firstPage ? ` (p. ${section.firstPage})` : '')
+  const breadcrumb   = breadcrumbFor(section)
   const subtopicName = section.path[1] ?? section.path[0] ?? topicName
   const sectionName  = section.path[section.path.length - 1] ?? subtopicName
 
