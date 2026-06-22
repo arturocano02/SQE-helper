@@ -291,13 +291,20 @@ function buildOutlineTopicMap(outline: OutlineEntry[]): Map<string, string> {
 /** Flattens the outline tree into an ordered list for SSE transport (UI just needs order + level). */
 export function flattenOutlineForTransport(entries: OutlineEntry[]): Array<{ title: string; page: number | null; level: number }> {
   const out: Array<{ title: string; page: number | null; level: number }> = []
-  function walk(list: OutlineEntry[]) {
+  // Uses actual tree depth here, NOT e.level — e.level is the raw internal classification level
+  // (stack-nesting numbers like 83/84 for a TOC-style line, used only to decide nesting while
+  // building the section tree). The UI indents each row by level * 14px, so handing it the raw
+  // internal number pushes every line over a thousand pixels off-screen. Depth (0, 1, 2, ...) is
+  // what a reader actually wants to see: topic, subtopic, sub-subtopic.
+  function walk(list: OutlineEntry[], depth: number) {
     for (const e of list) {
-      out.push({ title: e.title, page: e.page, level: e.level })
-      walk(e.children)
+      out.push({ title: e.title, page: e.page, level: depth })
+      walk(e.children, depth + 1)
     }
   }
-  walk(entries)
+  // Starts at 1 (not 0) to match the UI's `(level - 1) * 14px` indent math, which expects
+  // top-level entries at level 1.
+  walk(entries, 1)
   return out
 }
 
