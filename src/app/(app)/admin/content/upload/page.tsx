@@ -78,6 +78,7 @@ export default function AdminUploadPage() {
   const [chunkExtraction, setChunkExtraction] = useState<Record<string, ChunkExtractionState>>({})
   const [outlinePhase, setOutlinePhase] = useState<Record<string, OutlinePhaseState>>({})
   const [topics, setTopics] = useState<Topic[]>([])
+  const [wiping, setWiping] = useState(false)
   // null = not checked yet, 0 = checked and genuinely empty, >0 = has chunks.
   // Sample questions only ever match against chunks that already exist — checking this
   // up front means the admin sees "this won't work yet" before they upload anything,
@@ -510,6 +511,29 @@ export default function AdminUploadPage() {
     }
   }
 
+  // Deletes every source_materials row, knowledge_chunk, question, and the per-user history/SRS
+  // rows that exist solely because of those questions — a true blank slate, for when picking
+  // through a pile of duplicate/half-finished uploads (left over from troubleshooting before
+  // Resume/Backfill/Reset existed) isn't worth it and starting over is simpler.
+  async function wipeEverything() {
+    if (!window.confirm(
+      'Delete EVERY source material, knowledge chunk, and question — and the answer history / spaced-repetition rows tied to those questions? This cannot be undone. Nothing about topics or user accounts is touched.'
+    )) return
+    if (!window.confirm('Really sure? This wipes the entire content pipeline back to zero.')) return
+    setWiping(true)
+    try {
+      const res = await fetch('/api/admin/content/full-reset', { method: 'POST' })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        alert(json?.error ?? 'Reset failed')
+        return
+      }
+      window.location.href = '/admin/content/upload'
+    } finally {
+      setWiping(false)
+    }
+  }
+
   const readyToExtract = uploadedFiles.filter(f => f.status === 'done' && f.source_material_id)
 
   return (
@@ -517,14 +541,38 @@ export default function AdminUploadPage() {
       <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
 
         {/* Header */}
-        <div>
-          <h1 className="font-serif text-3xl mb-1" style={{ color: 'var(--text-primary)' }}>Upload Content</h1>
-          <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Files are saved, then you extract knowledge chunks. Questions are generated later from the{' '}
-            <Link href="/admin/content/chunks" style={{ color: 'var(--amber-text)' }} className="hover:underline">
-              Knowledge Graph
-            </Link>.
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="font-serif text-3xl mb-1" style={{ color: 'var(--text-primary)' }}>Upload Content</h1>
+            <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
+              Files are saved, then you extract knowledge chunks. Questions are generated later from the{' '}
+              <Link href="/admin/content/chunks" style={{ color: 'var(--amber-text)' }} className="hover:underline">
+                Knowledge Graph
+              </Link>.
+            </p>
+          </div>
+          <button
+            onClick={wipeEverything}
+            disabled={wiping}
+            title="Delete every source material, knowledge chunk, and question — full reset back to zero"
+            style={{
+              background: 'rgba(248,113,113,0.10)',
+              color: 'var(--status-wrong)',
+              fontFamily: 'var(--font-dm-sans)',
+              fontWeight: 500,
+              fontSize: 12,
+              padding: '8px 14px',
+              borderRadius: 8,
+              border: '1px solid rgba(248,113,113,0.3)',
+              cursor: wiping ? 'not-allowed' : 'pointer',
+              opacity: wiping ? 0.5 : 1,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+            className="hover:brightness-110"
+          >
+            {wiping ? 'Wiping…' : 'Wipe everything & start fresh ↺'}
+          </button>
         </div>
 
         {/* File type selector */}
