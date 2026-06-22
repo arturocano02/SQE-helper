@@ -115,14 +115,31 @@ export default function AdminUploadPage() {
       .from('source_materials')
       .select('id, file_name, file_type, chunk_status, chunks_extracted, chunk_error, chunk_sections_done, chunk_sections_total, chunk_outline, chunk_outline_confirmed, created_at')
       .order('created_at', { ascending: false })
-      .limit(50)
-      .then(({ data, error }) => {
-        if (error || !data || data.length === 0) return
+      .limit(200)
+      .then(({ data: rawData, error }) => {
+        if (error || !rawData || rawData.length === 0) return
+
+        // Repeated re-uploads of the same file (e.g. while troubleshooting an extraction issue,
+        // before realising Resume/Backfill/Reset exist) leave several source_materials rows with
+        // the same file_name. Every list below is keyed by file_name, so without deduping here,
+        // each repeat upload rendered as its own row sharing that key — React only ever showed
+        // one of them, and which one (sometimes an old, near-empty attempt instead of the real,
+        // fully-extracted one) was undefined. That's almost certainly what looked like "my
+        // extracted document disappears". Since rawData is already ordered newest-first, keeping
+        // only the first occurrence per file_name keeps the most recent attempt and discards the
+        // stale duplicates from view (their chunks/questions are untouched in the DB either way).
+        const seenNames = new Set<string>()
+        const data = rawData.filter(m => {
+          if (seenNames.has(m.file_name)) return false
+          seenNames.add(m.file_name)
+          return true
+        })
 
         setUploadedFiles(prev => {
           const known = new Set(prev.map(p => p.source_material_id))
+          const knownNames = new Set(prev.map(p => p.file.name))
           const loaded: UploadedFile[] = data
-            .filter(m => !known.has(m.id))
+            .filter(m => !known.has(m.id) && !knownNames.has(m.file_name))
             .map(m => ({
               // No real File object exists for a row loaded from the DB — this stand-in only
               // needs `.name`, the one property every render path in this file actually reads.

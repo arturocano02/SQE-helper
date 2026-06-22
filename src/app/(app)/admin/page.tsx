@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import type { SourceMaterial, Topic } from '@/types/database'
 import SourceMaterialRow from '@/components/admin/SourceMaterialRow'
 import BulkApproveButton from '@/components/admin/BulkApproveButton'
+import CleanupOrphansButton from '@/components/admin/CleanupOrphansButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,6 +44,11 @@ export default async function AdminDashboardPage() {
     { count: approvedMcq },
     { count: totalFlashcards },
     { count: approvedFlashcards },
+    // knowledge_chunks.source_material_id is ON DELETE SET NULL — deleting a source_materials
+    // row directly (rather than via the app's "Reset & re-extract") detaches its chunks instead
+    // of removing them. Surfaced here so stale, untraceable chunks don't sit invisibly in the
+    // Knowledge Graph after manual DB cleanup.
+    { count: orphanedChunks },
   ] = await Promise.all([
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }),
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }).eq('is_approved', true),
@@ -52,6 +58,7 @@ export default async function AdminDashboardPage() {
     admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'mcq').eq('status', 'approved'),
     admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'flashcard'),
     admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'flashcard').eq('status', 'approved'),
+    admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }).is('source_material_id', null),
   ])
 
   const { data: qPerTopic } = await admin
@@ -231,6 +238,17 @@ export default async function AdminDashboardPage() {
             <StatCard label="Knowledge Chunks" value={totalChunks ?? 0} />
             <StatCard label="Approved Chunks" value={approvedChunks ?? 0} accent />
           </div>
+          {(orphanedChunks ?? 0) > 0 && (
+            <div
+              className="flex items-center justify-between gap-4 flex-wrap mb-4 p-4"
+              style={{ background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 12 }}
+            >
+              <p className="font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>
+                {orphanedChunks} chunk{orphanedChunks !== 1 ? 's' : ''} with no source file — left behind by a direct delete instead of &quot;Reset &amp; re-extract&quot;
+              </p>
+              <CleanupOrphansButton count={orphanedChunks ?? 0} />
+            </div>
+          )}
           {(approvedChunks ?? 0) > 0 && (
             <Link
               href="/admin/content/generate"
