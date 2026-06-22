@@ -24,10 +24,29 @@ type BackfillState =
   | { status: 'done'; message: string }
   | { status: 'error'; message: string }
 
+interface VerifyReport {
+  sections_total: number
+  sections_covered: number
+  sections_missing: number
+  missing_sections: string[]
+  thin_sections: Array<{ section: string; leaf_chars: number; chunk_chars: number }>
+  chars_total: number
+  chars_captured: number
+  char_coverage_pct: number
+}
+
+type VerifyState =
+  | { status: 'idle' }
+  | { status: 'running' }
+  | { status: 'done'; report: VerifyReport }
+  | { status: 'error'; message: string }
+
 export default function SourceMaterialRow({ material: m }: SourceMaterialRowProps) {
   const [expanded, setExpanded] = useState(false)
   const [backfill, setBackfill] = useState<BackfillState>({ status: 'idle' })
   const [resetting, setResetting] = useState(false)
+  const [verify, setVerify] = useState<VerifyState>({ status: 'idle' })
+  const [verifyDetailOpen, setVerifyDetailOpen] = useState(false)
 
   // Full wipe-and-restart, for when the topic-resolution bug (see backfill's comment above)
   // dropped so much of a document that patching individual missing sections isn't worth it.
@@ -103,6 +122,30 @@ export default function SourceMaterialRow({ material: m }: SourceMaterialRowProp
           : `Recovered ${filledTotal} chunks so far · ${json.remaining_missing} sections still missing`,
       })
       if (json.done) return
+    }
+  }
+
+  // Re-parses the real docx fresh and diffs it against the chunks actually saved — no Claude
+  // calls, so this is fast. Answers "did this actually read the whole thing" with numbers
+  // (section + character coverage) instead of trusting chunk_status, which only tracks whether
+  // every section was visited, not whether what it found made it into the DB intact.
+  async function runVerify() {
+    setVerify({ status: 'running' })
+    setVerifyDetailOpen(false)
+    try {
+      const res = await fetch('/api/admin/chunks/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_material_id: m.id }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        setVerify({ status: 'error', message: json?.error ?? 'Verify failed' })
+        return
+      }
+      setVerify({ status: 'done', report: json as VerifyReport })
+    } catch (err) {
+      setVerify({ status: 'error', message: err instanceof Error ? err.message : 'Verify failed' })
     }
   }
 
@@ -229,6 +272,19 @@ export default function SourceMaterialRow({ material: m }: SourceMaterialRowProp
             {resetting && (
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>⟳ Deleting old chunks…</span>
             )}
+            {m.chunk_status === 'extracted' && m.file_type === 'docx' && verify.status !== 'running' && (
+              <button
+                onClick={runVerify}
+                className="text-xs font-medium transition hover:underline"
+                style={{ color: 'var(--text-secondary)' }}
+                title="Re-reads the actual docx and checks every section/character against what's in the DB — no AI calls, just a coverage report"
+              >
+                Verify coverage →
+              </button>
+            )}
+            {verify.status === 'running' && (
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>⟳ Checking coverage…</span>
+            )}
             {m.raw_text && (
               <button
                 onClick={() => setExpanded(e => !e)}
@@ -245,6 +301,61 @@ export default function SourceMaterialRow({ material: m }: SourceMaterialRowProp
               {backfill.message}
             </p>
           )}
+          {verify.status === 'error' && (
+            <p className="text-[11px] mt-1" style={{ color: 'var(--status-wrong)' }}>{verify.message}</p>
+          )}
+          {verify.status === 'done' && (() => {
+            const r = verify.report
+            const allGood = r.sections_missing === 0 && r.thin_sections.length === 0
+            const color = allGood ? 'var(--status-correct)' : 'var(--status-wrong)'
+            return (
+              <div className="mt-1">
+                <p className="text-[11px]" style={{ color }}>
+                  {allGood ? '✓' : '⚠'} {r.sections_covered}/{r.sections_total} sections covered ·{' '}
+                  {r.char_coverage_pct}% of characters captured
+                  {r.thin_sections.length > 0 && ` · ${r.thin_sections.length} thin`}
+                  {!allGood && (
+                    <button
+                      onClick={() => setVerifyDetailOpen(o => !o)}
+                      className="ml-1 underline"
+                      style={{ color }}
+                    >
+                      {verifyDetailOpen ? 'hide' : 'show detail'}
+                    </button>
+                  )}
+                </p>
+                {verifyDetailOpen && (
+                  <div
+                    className="mt-1 rounded-lg overflow-y-auto"
+                    style={{ maxHeight: 200, background: 'var(--surface-2)', border: '1px solid var(--surface-border)', padding: '8px 10px' }}
+                  >
+                    {r.missing_sections.length > 0 && (
+                      <>
+                        <p className="text-[10px] font-medium mb-1" style={{ color: 'var(--status-wrong)' }}>
+                          Missing entirely ({r.sections_missing}{r.sections_missing > r.missing_sections.length ? `, showing first ${r.missing_sections.length}` : ''}):
+                        </p>
+                        {r.missing_sections.map((s, i) => (
+                          <p key={`m-${i}`} className="font-mono text-[10px] leading-5" style={{ color: 'var(--text-secondary)' }}>{s}</p>
+                        ))}
+                      </>
+                    )}
+                    {r.thin_sections.length > 0 && (
+                      <>
+                        <p className="text-[10px] font-medium mb-1 mt-2" style={{ color: 'var(--status-warning)' }}>
+                          Thin (covered but captured &lt;20% of section length):
+                        </p>
+                        {r.thin_sections.map((s, i) => (
+                          <p key={`t-${i}`} className="font-mono text-[10px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+                            {s.section} — {s.chunk_chars}/{s.leaf_chars} chars
+                          </p>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
         </td>
       </tr>
 

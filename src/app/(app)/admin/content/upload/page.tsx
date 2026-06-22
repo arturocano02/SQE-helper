@@ -53,6 +53,10 @@ interface ChunkExtractionState {
    *  extracted as garbage chunks — shown so the admin can confirm the parser read the
    *  document's intended topic/subtopic structure before extraction tags content against it. */
   outline?: Array<{ title: string; page: number | null; level: number }>
+  /** Auto-run once extraction finishes (notes-mode .docx only) — re-parses the real file and
+   *  diffs it against the chunks just saved, so "did this actually read the whole thing" has an
+   *  answer with numbers attached instead of just trusting that every section was visited. */
+  verify?: { status: 'running' | 'done' | 'error'; sectionsTotal?: number; sectionsCovered?: number; charCoveragePct?: number; missingCount?: number; thinCount?: number; message?: string }
 }
 
 /**
@@ -506,8 +510,69 @@ export default function AdminUploadPage() {
         }))
       }
       console.log(`[extract] "${fileName}" — extraction loop exited (final stage: ${stage})`)
+
+      // Done doesn't mean complete — it means every section was visited. Whether what was
+      // found in each section actually made it into the DB intact is a separate question, and
+      // is exactly what got missed before (chunk_status read "extracted" while ~88% of one
+      // real document's content had silently been dropped). Run the same check automatically
+      // instead of relying on the admin to remember to ask for it.
+      if (stage === 'done' && fileType === 'notes' && /\.docx$/i.test(fileName)) {
+        await verifyExtraction(fileName, sourceMaterialId)
+      }
     } finally {
       activeExtractions.current.delete(fileName)
+    }
+  }
+
+  /** Re-parses the real file and diffs it against the chunks just saved — no AI calls, fast.
+   *  Logs the full report to the console either way, and surfaces a short summary inline so a
+   *  gap doesn't require opening dev tools to notice. */
+  async function verifyExtraction(fileName: string, sourceMaterialId: string) {
+    setChunkExtraction(prev => ({
+      ...prev,
+      [fileName]: { ...prev[fileName], verify: { status: 'running' } },
+    }))
+    try {
+      const res = await fetch('/api/admin/chunks/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_material_id: sourceMaterialId }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        console.error(`[verify] "${fileName}" failed:`, json?.error)
+        setChunkExtraction(prev => ({
+          ...prev,
+          [fileName]: { ...prev[fileName], verify: { status: 'error', message: json?.error ?? 'Verify failed' } },
+        }))
+        return
+      }
+      console.log(
+        `[verify] "${fileName}" — ${json.sections_covered}/${json.sections_total} sections covered, ` +
+        `${json.char_coverage_pct}% characters captured` +
+        (json.sections_missing > 0 ? `, MISSING sections: ${JSON.stringify(json.missing_sections)}` : '') +
+        (json.thin_sections?.length > 0 ? `, THIN sections: ${JSON.stringify(json.thin_sections)}` : '')
+      )
+      setChunkExtraction(prev => ({
+        ...prev,
+        [fileName]: {
+          ...prev[fileName],
+          verify: {
+            status: 'done',
+            sectionsTotal: json.sections_total,
+            sectionsCovered: json.sections_covered,
+            charCoveragePct: json.char_coverage_pct,
+            missingCount: json.sections_missing,
+            thinCount: json.thin_sections?.length ?? 0,
+          },
+        },
+      }))
+    } catch (err) {
+      console.error(`[verify] "${fileName}" threw:`, err)
+      setChunkExtraction(prev => ({
+        ...prev,
+        [fileName]: { ...prev[fileName], verify: { status: 'error', message: err instanceof Error ? err.message : 'Verify failed' } },
+      }))
     }
   }
 
@@ -1129,6 +1194,39 @@ export default function AdminUploadPage() {
                             )}
                           </div>
                         )}
+
+                        {state?.verify?.status === 'running' && (
+                          <p className="font-sans text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                            ⟳ Checking coverage — re-reading the file and comparing against what was saved…
+                          </p>
+                        )}
+                        {state?.verify?.status === 'error' && (
+                          <p className="font-sans text-[11px] mt-2" style={{ color: 'var(--status-wrong)' }}>
+                            Coverage check failed — {state.verify.message}
+                          </p>
+                        )}
+                        {state?.verify?.status === 'done' && (() => {
+                          const v = state.verify!
+                          const allGood = (v.missingCount ?? 0) === 0 && (v.thinCount ?? 0) === 0
+                          return (
+                            <p
+                              className="font-sans text-[11px] mt-2"
+                              style={{ color: allGood ? 'var(--status-correct)' : 'var(--status-wrong)' }}
+                            >
+                              {allGood ? '✓ Coverage check passed' : '⚠ Coverage gaps found'} —{' '}
+                              {v.sectionsCovered}/{v.sectionsTotal} sections, {v.charCoveragePct}% of characters captured
+                              {!allGood && (
+                                <>
+                                  {(v.missingCount ?? 0) > 0 && ` · ${v.missingCount} sections missing entirely`}
+                                  {(v.thinCount ?? 0) > 0 && ` · ${v.thinCount} thin`}
+                                  {' — see the same file on the '}
+                                  <Link href="/admin" style={{ color: 'var(--status-wrong)', textDecoration: 'underline' }}>admin dashboard</Link>
+                                  {' for the full list, or check the browser console for this run\'s log.'}
+                                </>
+                              )}
+                            </p>
+                          )
+                        })()}
 
                         {isDone && (
                           <div className="flex gap-3 mt-2">
