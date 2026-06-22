@@ -147,11 +147,38 @@ function splitTitlePage(raw: string): { title: string; page: number | null } {
   return { title: trimmed, page: null }
 }
 
+/** Parses a block of TOC bullet content (one entry per line, "Title<digits>" mashed together by
+ *  dot-leader stripping) into outline child entries. Needed because the heading classifier
+ *  sometimes folds a whole run of TOC bullet lines into one node's body content rather than
+ *  giving each its own child heading — see the comment on buildOutlineFromNode below. */
+function parseTocBulletContent(content: string): OutlineEntry[] {
+  const lines = content.split(/\n+/).map(l => l.trim()).filter(Boolean)
+  const entries: OutlineEntry[] = []
+  for (const line of lines) {
+    const { title, page } = splitTitlePage(line)
+    if (!title || page === null) continue
+    entries.push({ title, page, level: 0, children: [] })
+  }
+  return entries
+}
+
+/**
+ * A TOC bullet line (e.g. "BUSINESS LAW AND PRACTICE .... 3") sometimes gets classified as a
+ * heading in its own right, because it shares the exact same bold/caps/colour signature as that
+ * chapter's REAL heading later in the document — the visual-clustering model has no way to tell
+ * "this bold-caps line is a TOC entry" from "this bold-caps line is the real chapter title." When
+ * that happens, TOC_FORCED_LEVEL has already popped the literal "Contents" node off the stack by
+ * the time it's hit, so the bullet line attaches as a SIBLING of Contents, not a child — and its
+ * own sub-bullets (which don't match any heading style) land as flat \n\n-joined text in its
+ * .content instead of as further child nodes. So a node here may carry its outline children
+ * either as real DocSection children (the more common shape) or as bullet-text content (this
+ * document's shape) — both are handled.
+ */
 function buildOutlineFromNode(node: DocSection): OutlineEntry[] {
   return node.children.map(child => ({
     ...splitTitlePage(child.title),
     level: child.level,
-    children: buildOutlineFromNode(child),
+    children: child.children.length > 0 ? buildOutlineFromNode(child) : parseTocBulletContent(child.content),
   }))
 }
 
@@ -170,22 +197,71 @@ function findFrontMatterNodes(sections: DocSection[]): DocSection[] {
 }
 
 /**
+ * Collects every node anywhere in the tree whose firstPage falls within the front-matter page
+ * range, in document order — this is the actual TOC content even when it didn't end up nested
+ * under the literal "Contents" heading node. (See buildOutlineFromNode: a TOC chapter-line gets
+ * popped to a SIBLING of Contents once TOC_FORCED_LEVEL takes Contents out of the stack, so
+ * walking Contents's own .children alone can miss the whole outline — page range is a more
+ * reliable signal than tree position here.) Skips Contents nodes themselves.
+ */
+function collectFrontMatterRegionNodes(sections: DocSection[], frontMatterPageEnd: number): DocSection[] {
+  const found: DocSection[] = []
+  function walk(list: DocSection[], depth: number) {
+    for (const s of list) {
+      // A genuine TOC chapter-line is recognisable by its OWN title ending in a dot-leader page
+      // number (e.g. "BUSINESS LAW AND PRACTICE3"). The page-range check alone isn't enough: the
+      // document's own root title can ALSO coincidentally end in a digit (e.g. "FLK1" → splits as
+      // title "FLK" + page 1) and the REAL chapter heading that duplicates a TOC line's text (e.g.
+      // "BUSINESS LAW AND PRACTICE", no digit suffix) both also sit on a front-matter page — but
+      // their .children span the entire rest of the document, so including either here would dump
+      // the whole document tree into the outline. depth > 0 rules out the document's own root
+      // title specifically (it's never itself a TOC line).
+      const isTocLine = depth > 0 && s.firstPage !== null && s.firstPage <= frontMatterPageEnd && !isFrontMatterNode(s) && splitTitlePage(s.title).page !== null
+      if (isTocLine) {
+        found.push(s)
+        continue
+      }
+      walk(s.children, depth + 1)
+    }
+  }
+  walk(sections, 0)
+  return found
+}
+
+function buildOutlineFromRegionNode(node: DocSection): OutlineEntry {
+  const { title, page } = splitTitlePage(node.title)
+  const children = node.children.length > 0
+    ? node.children.map(child => ({
+        ...splitTitlePage(child.title),
+        level: child.level,
+        children: child.children.length > 0 ? buildOutlineFromNode(child) : parseTocBulletContent(child.content),
+      }))
+    : parseTocBulletContent(node.content)
+  return { title, page, level: node.level, children }
+}
+
+/**
  * The physical last page the Contents section occupies. Deliberately NOT computed by walking
  * the Contents node's subtree — heading-level misclassification elsewhere in a document (e.g.
  * one chapter's title using a different Word style than the rest) can still leave stray real
  * content nested under Contents even after the forced-level fix in classifyHeadingParagraph,
  * and a subtree walk would then report some much later page as "front matter," silently
- * excluding real content. Revision-note documents in this app have a short, fixed-length
- * Contents section — using the Contents heading's OWN physical page plus one more page is a
- * direct, deterministic answer to "where does the Contents section end" instead of an inference
- * that can be thrown off by unrelated heading-style quirks deeper in the document.
+ * excluding real content.
+ *
+ * Only the FIRST (earliest-page) match is used as "the" master Contents page — a document can
+ * have other headings that happen to be titled just "Contents" deeper in (e.g. a per-chapter
+ * mini-index before a later Part begins), and those are real content, not front matter. Taking
+ * the max across every match was wrong: it let a later, unrelated "Contents" heading push the
+ * cutoff forward by dozens of pages, silently excluding everything in between. The document's
+ * real front matter is always the one at the very start.
  */
 function computeFrontMatterPageEnd(frontMatterNodes: DocSection[]): number {
-  let maxPage = 0
+  let earliestPage: number | null = null
   for (const node of frontMatterNodes) {
-    if (node.firstPage !== null) maxPage = Math.max(maxPage, node.firstPage + 1)
+    if (node.firstPage === null) continue
+    if (earliestPage === null || node.firstPage < earliestPage) earliestPage = node.firstPage
   }
-  return maxPage
+  return earliestPage === null ? 0 : earliestPage + 1
 }
 
 /** Maps every heading the Contents page mentions (topic AND subtopic level, upper-cased) to
@@ -586,6 +662,26 @@ function pStyleLevel(pStyle: string | null): number | null {
   return m ? parseInt(m[1], 10) : null
 }
 
+/**
+ * Level for a paragraph inside Word's auto-generated Table of Contents (pStyle "TOC1", "TOC2",
+ * ...) — the style's own digit is the TOC's nesting depth, the single most reliable signal
+ * available for telling a chapter-level TOC line from a subtopic-level one. It isn't sufficient
+ * on its own though: some source documents (seen in this app's FLK1 notes) reuse one TOC style,
+ * e.g. TOC2, for every depth and rely purely on the chapter line being ALL CAPS while subtopic
+ * lines are mixed case — relying on the style digit alone would flatten those into one level.
+ * Folding in the ALL CAPS signal (one level shallower than the bare style digit implies) handles
+ * both shapes: a genuinely depth-2 TOC2 style still nests under a depth-1 TOC1 line when both are
+ * present (FLK2's notes), and an ALL-CAPS TOC2 chapter line still sits shallower than a mixed-case
+ * TOC2 subtopic line when only one style is used for both (FLK1's notes).
+ */
+function tocStyleLevel(pStyle: string | null, text: string): number | null {
+  const m = pStyle?.match(/^TOC(\d+)$/i)
+  if (!m) return null
+  const depth = parseInt(m[1], 10)
+  const allCaps = text.length > 0 && text === text.toUpperCase() && /[A-Z]{2,}/.test(text)
+  return 80 + depth * 2 - (allCaps ? 1 : 0)
+}
+
 export interface HeadingStyleSummary {
   level: number
   kind: HeadingKind
@@ -611,7 +707,8 @@ function buildHeadingStyleModel(paragraphs: DocxParagraph[]): HeadingStyleModel 
   // clustering pool below.
   const explicit = new Set<DocxParagraph>()
   for (const p of paragraphs) {
-    if (pStyleLevel(p.pStyle) !== null) explicit.add(p)
+    const text = p.runs.map(r => r.text).join('').trim()
+    if (pStyleLevel(p.pStyle) !== null || tocStyleLevel(p.pStyle, text) !== null) explicit.add(p)
   }
 
   // Body-text baseline: the signature accounting for the most characters of
@@ -722,6 +819,16 @@ function classifyHeadingParagraph(p: DocxParagraph, model: HeadingStyleModel): H
   // tagged as Contents/TOC content.
   if (TOC_TITLE_RE.test(text)) {
     return { level: TOC_FORCED_LEVEL, kind: 'definition', text }
+  }
+
+  // A TOC bullet line's own style (TOC1/TOC2/...) plus its ALL CAPS-ness is a far more reliable
+  // depth signal than the visual clustering below, which has no way to tell a chapter-level TOC
+  // line from a subtopic-level one when both happen to share the same run formatting (seen in
+  // this app's FLK2 notes, where every TOC line is ALL CAPS regardless of depth). Checked before
+  // the generic Word-style branch since pStyleLevel doesn't recognise "TOCn" styles at all.
+  const tocLevel = tocStyleLevel(p.pStyle, text)
+  if (tocLevel !== null) {
+    return { level: tocLevel, kind: 'definition', text }
   }
 
   const explicitLevel = pStyleLevel(p.pStyle)
@@ -864,9 +971,9 @@ export async function parseDocxToSections(buffer: Buffer): Promise<{
   // rest of the document covers, used below to tag content whose own heading text doesn't
   // directly match the static HEADER_TO_SLUG dictionary.
   const frontMatterNodes = findFrontMatterNodes(sections)
-  const outline = frontMatterNodes.flatMap(buildOutlineFromNode)
-  const outlineTopicMap = buildOutlineTopicMap(outline)
   const frontMatterPageEnd = computeFrontMatterPageEnd(frontMatterNodes)
+  const outline = collectFrontMatterRegionNodes(sections, frontMatterPageEnd).map(buildOutlineFromRegionNode)
+  const outlineTopicMap = buildOutlineTopicMap(outline)
 
   return { sections, headingStyles: model.summary, outline, outlineTopicMap, frontMatterPageEnd }
 }
