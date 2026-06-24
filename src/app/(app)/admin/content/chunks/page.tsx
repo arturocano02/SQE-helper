@@ -22,6 +22,32 @@ const RULE_TYPES = ['definition', 'threshold', 'test', 'exception', 'procedure',
 
 type ViewMode = 'tree' | 'list'
 
+interface VerifyResult {
+  sections_total: number
+  sections_covered: number
+  sections_missing: number
+  missing_sections: string[]
+  thin_sections: Array<{ section: string; leaf_chars: number; chunk_chars: number }>
+  chars_total: number
+  chars_captured: number
+  char_coverage_pct: number
+  by_chapter: Array<{ chapter: string; sections_total: number; sections_covered: number }>
+}
+
+interface PreviewResult {
+  file_name: string
+  page_limit: number
+  used_page_numbers: boolean
+  sections: Array<{
+    section: string
+    page: number | null
+    original_content: string
+    original_chars: number
+    chunks: Array<{ rule_text: string; rule_type: string }>
+    chunk_chars: number
+  }>
+}
+
 interface GroupedChunks {
   topic: Topic
   subtopics: Array<{
@@ -75,6 +101,13 @@ export default function ChunksPage() {
   const [editing, setEditing] = useState<ChunkRow | null>(null)
   const [saving, setSaving] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
+  // True once the admin explicitly clicks "Select all N matching this filter" — at that point
+  // the selection is no longer "the ids currently in bulkSelected" (which can only ever be the
+  // ≤200 rows actually loaded into the browser) but "every row in the DB matching the current
+  // topic/approval filter", resolved server-side at action time. This is the actual fix for
+  // "select all chunks, not just 200 visible" — bulkSelected alone can never represent more
+  // rows than are loaded, no matter how the button is wired.
+  const [selectAllMatching, setSelectAllMatching] = useState(false)
   const [bulkApproving, setBulkApproving] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [page, setPage] = useState(1)
@@ -85,12 +118,70 @@ export default function ChunksPage() {
   const [search, setSearch] = useState('')
   const LIMIT = 200 // higher limit for tree view
 
+  // Coverage check — lets the admin confirm a document was fully read BEFORE bulk-approving
+  // its chunks, not just after the fact on the separate upload page. Coverage is fundamentally
+  // a per-document property (it's checked by re-parsing the original docx), so this is scoped
+  // to a source material the admin picks, independent of the topic/approval filters above.
+  const [sourceMaterials, setSourceMaterials] = useState<Array<{ id: string; file_name: string }>>([])
+  const [verifySourceId, setVerifySourceId] = useState('')
+  const [verifyState, setVerifyState] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'error'; message: string }
+    | { status: 'done'; verify: VerifyResult; preview: PreviewResult | null }
+  >({ status: 'idle' })
+
   useEffect(() => {
     const supabase = createClient()
     supabase.from('topics').select('*').order('sort_order').then(({ data }) => {
       setTopics((data ?? []) as Topic[])
     })
+    supabase
+      .from('source_materials')
+      .select('id, file_name')
+      .order('created_at', { ascending: false })
+      .then(({ data }) => setSourceMaterials((data ?? []) as Array<{ id: string; file_name: string }>))
   }, [])
+
+  async function runCoverageCheck() {
+    if (!verifySourceId) return
+    setVerifyState({ status: 'loading' })
+    try {
+      const [verifyRes, previewRes] = await Promise.all([
+        fetch('/api/admin/chunks/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_material_id: verifySourceId }),
+        }),
+        fetch('/api/admin/chunks/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_material_id: verifySourceId, page_limit: 5 }),
+        }),
+      ])
+      const verifyJson = await verifyRes.json()
+      if (!verifyRes.ok) {
+        setVerifyState({ status: 'error', message: verifyJson?.error ?? 'Verify failed' })
+        return
+      }
+      const previewJson = previewRes.ok ? await previewRes.json() : null
+      setVerifyState({ status: 'done', verify: verifyJson, preview: previewJson })
+    } catch {
+      setVerifyState({ status: 'error', message: 'Network error running coverage check' })
+    }
+  }
+
+  // The exact server-side filter the current screen represents — shared between the GET load
+  // below and the bulk PATCH/DELETE "select all matching" calls, so "select all" always means
+  // precisely the rows the admin is looking at, never more and never less.
+  const currentFilter = useCallback((): { topic_id?: string; is_approved?: boolean; needs_review?: boolean } => {
+    const f: { topic_id?: string; is_approved?: boolean; needs_review?: boolean } = {}
+    if (selectedTopicId) f.topic_id = selectedTopicId
+    if (filterApproved === 'approved') f.is_approved = true
+    if (filterApproved === 'pending') f.is_approved = false
+    if (filterApproved === 'review') f.needs_review = true
+    return f
+  }, [selectedTopicId, filterApproved])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -105,6 +196,7 @@ export default function ChunksPage() {
     setChunks(data.chunks ?? [])
     setTotal(data.total ?? 0)
     setBulkSelected(new Set())
+    setSelectAllMatching(false)
     setLoading(false)
   }, [selectedTopicId, filterApproved, page])
 
@@ -150,6 +242,19 @@ export default function ChunksPage() {
   }
 
   async function bulkApprove(approve: boolean) {
+    if (selectAllMatching) {
+      setBulkApproving(true)
+      const res = await fetch('/api/admin/chunks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: currentFilter(), is_approved: approve }),
+      })
+      const json = await res.json().catch(() => null)
+      setBulkApproving(false)
+      if (!res.ok) { alert(json?.error ?? 'Bulk update failed'); return }
+      load()
+      return
+    }
     if (bulkSelected.size === 0) return
     setBulkApproving(true)
     await fetch('/api/admin/chunks', {
@@ -162,6 +267,20 @@ export default function ChunksPage() {
   }
 
   async function bulkDelete() {
+    if (selectAllMatching) {
+      if (!confirm(`Permanently delete all ${total} chunks matching the current filter? This cannot be undone.`)) return
+      setBulkDeleting(true)
+      const res = await fetch('/api/admin/chunks', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: currentFilter() }),
+      })
+      const json = await res.json().catch(() => null)
+      setBulkDeleting(false)
+      if (!res.ok) { alert(json?.error ?? 'Bulk delete failed'); return }
+      load()
+      return
+    }
     if (bulkSelected.size === 0) return
     if (!confirm(`Permanently delete ${bulkSelected.size} chunk${bulkSelected.size !== 1 ? 's' : ''}? This cannot be undone.`)) return
     setBulkDeleting(true)
@@ -329,6 +448,124 @@ export default function ChunksPage() {
       </header>
 
       <div className="max-w-7xl mx-auto px-5 py-6">
+        {/* Coverage check — confirm a document was fully read BEFORE approving its chunks */}
+        <div
+          className="mb-6"
+          style={{ border: '1px solid var(--surface-border)', borderRadius: 10, padding: 14, background: 'var(--surface-1, transparent)' }}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-sans text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Check coverage before approving
+            </span>
+            <select
+              value={verifySourceId}
+              onChange={e => { setVerifySourceId(e.target.value); setVerifyState({ status: 'idle' }) }}
+              style={{
+                background: 'var(--surface-2)',
+                border: '1px solid var(--surface-border)',
+                color: 'var(--text-primary)',
+                borderRadius: 8,
+                padding: '6px 12px',
+                fontFamily: 'var(--font-dm-sans)',
+                fontSize: 13,
+                minWidth: 220,
+              }}
+            >
+              <option value="">Select a source document…</option>
+              {sourceMaterials.map(m => <option key={m.id} value={m.id}>{m.file_name}</option>)}
+            </select>
+            <button
+              onClick={runCoverageCheck}
+              disabled={!verifySourceId || verifyState.status === 'loading'}
+              style={{
+                background: 'var(--amber)',
+                color: '#0A0A08',
+                fontFamily: 'var(--font-dm-sans)',
+                fontWeight: 600,
+                fontSize: 13,
+                padding: '6px 14px',
+                borderRadius: 8,
+                border: 'none',
+                cursor: !verifySourceId || verifyState.status === 'loading' ? 'not-allowed' : 'pointer',
+                opacity: !verifySourceId || verifyState.status === 'loading' ? 0.6 : 1,
+              }}
+            >
+              {verifyState.status === 'loading' ? 'Checking…' : 'Check coverage'}
+            </button>
+            <span className="font-sans text-xs" style={{ color: 'var(--text-muted)' }}>
+              Re-reads the original document and compares it against the saved chunks for this material — same check as on the Upload page, just available here too, before you bulk-approve.
+            </span>
+          </div>
+
+          {verifyState.status === 'error' && (
+            <div className="mt-3 font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>{verifyState.message}</div>
+          )}
+
+          {verifyState.status === 'done' && (
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <Pill
+                  label={`${verifyState.verify.sections_covered}/${verifyState.verify.sections_total} sections covered`}
+                  color={verifyState.verify.sections_missing === 0 ? 'green' : 'red'}
+                />
+                <Pill
+                  label={`${verifyState.verify.char_coverage_pct}% characters captured`}
+                  color={verifyState.verify.char_coverage_pct >= 90 ? 'green' : verifyState.verify.char_coverage_pct >= 60 ? 'amber' : 'red'}
+                />
+                {verifyState.verify.thin_sections.length > 0 && (
+                  <Pill label={`⚠ ${verifyState.verify.thin_sections.length} thin sections`} color="amber" />
+                )}
+              </div>
+
+              {verifyState.verify.sections_missing > 0 && (
+                <div className="font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>
+                  Missing sections (no chunks at all):
+                  <ul className="mt-1 ml-4 list-disc font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    {verifyState.verify.missing_sections.slice(0, 15).map(s => <li key={s}>{s}</li>)}
+                  </ul>
+                  {verifyState.verify.sections_missing > 15 && (
+                    <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      +{verifyState.verify.sections_missing - 15} more
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {verifyState.preview && (
+                <details>
+                  <summary className="font-sans text-sm cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    Eyeball the first {verifyState.preview.page_limit} pages — original text next to saved chunks
+                  </summary>
+                  <div className="mt-2 space-y-3 max-h-96 overflow-y-auto pr-2">
+                    {verifyState.preview.sections.map((s, i) => (
+                      <div key={i} style={{ border: '1px solid var(--surface-border)', borderRadius: 8, padding: 10 }}>
+                        <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+                          {s.section}{s.page ? ` (p. ${s.page})` : ''}
+                          {s.chunks.length === 0 && (
+                            <span className="ml-2" style={{ color: 'var(--status-wrong)' }}>— NO CHUNKS SAVED</span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="font-sans text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>Original document text</div>
+                            <pre className="font-mono text-xs whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{s.original_content}</pre>
+                          </div>
+                          <div>
+                            <div className="font-sans text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>Saved chunks</div>
+                            <ol className="font-mono text-xs list-decimal ml-4 space-y-1" style={{ color: 'var(--text-secondary)' }}>
+                              {s.chunks.map((c, j) => <li key={j}>[{c.rule_type}] {c.rule_text}</li>)}
+                            </ol>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-3 mb-6">
           <select
@@ -396,7 +633,7 @@ export default function ChunksPage() {
           {/* Select All / Deselect All */}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setBulkSelected(new Set(filteredChunks.map(c => c.id)))}
+              onClick={() => { setBulkSelected(new Set(filteredChunks.map(c => c.id))); setSelectAllMatching(false) }}
               style={{
                 background: 'transparent',
                 color: 'var(--text-secondary)',
@@ -408,11 +645,37 @@ export default function ChunksPage() {
                 cursor: 'pointer',
               }}
             >
-              Select all ({filteredChunks.length})
+              Select all loaded ({filteredChunks.length})
             </button>
-            {bulkSelected.size > 0 && (
+            {/* The button above can only ever select what's been fetched into the browser
+                (≤200 rows, less than `total` whenever this filter matches more than that).
+                This second button is the actual "select everything" fix — it sends the filter
+                itself to the server at action time instead of an id list, so it scales to any
+                total. Disabled when search is active since the free-text search is client-side
+                only and was never sent to the server, so "matching filter" wouldn't include it. */}
+            {total > filteredChunks.length && (
               <button
-                onClick={() => setBulkSelected(new Set())}
+                onClick={() => { setSelectAllMatching(true); setBulkSelected(new Set()) }}
+                disabled={search.trim().length > 0}
+                title={search.trim() ? 'Clear the search box to select across all matching rows' : undefined}
+                style={{
+                  background: selectAllMatching ? 'var(--accent-dim)' : 'transparent',
+                  color: search.trim() ? 'var(--text-muted)' : 'var(--accent)',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontSize: 12,
+                  padding: '5px 12px',
+                  borderRadius: 6,
+                  border: '1px solid var(--accent)',
+                  cursor: search.trim() ? 'not-allowed' : 'pointer',
+                  opacity: search.trim() ? 0.5 : 1,
+                }}
+              >
+                Select all matching filter ({total})
+              </button>
+            )}
+            {(bulkSelected.size > 0 || selectAllMatching) && (
+              <button
+                onClick={() => { setBulkSelected(new Set()); setSelectAllMatching(false) }}
                 style={{
                   background: 'transparent',
                   color: 'var(--text-muted)',
@@ -429,10 +692,10 @@ export default function ChunksPage() {
             )}
           </div>
 
-          {bulkSelected.size > 0 && (
+          {(bulkSelected.size > 0 || selectAllMatching) && (
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
-                {bulkSelected.size} selected
+                {selectAllMatching ? `all ${total} matching filter` : `${bulkSelected.size} selected`}
               </span>
               <button
                 onClick={() => bulkApprove(true)}
@@ -564,6 +827,7 @@ export default function ChunksPage() {
                             if (checked) next.add(id)
                             else next.delete(id)
                             setBulkSelected(next)
+                            setSelectAllMatching(false)
                           }}
                           onEdit={setEditing}
                           onApprove={toggleApprove}
@@ -582,6 +846,7 @@ export default function ChunksPage() {
                             if (checked) next.add(id)
                             else next.delete(id)
                             setBulkSelected(next)
+                            setSelectAllMatching(false)
                           }}
                           onEdit={setEditing}
                           onApprove={toggleApprove}
@@ -600,8 +865,8 @@ export default function ChunksPage() {
             <div className="flex items-center gap-3 px-3 py-2">
               <input
                 type="checkbox"
-                checked={bulkSelected.size === filteredChunks.length && filteredChunks.length > 0}
-                onChange={e => setBulkSelected(e.target.checked ? new Set(filteredChunks.map(c => c.id)) : new Set())}
+                checked={!selectAllMatching && bulkSelected.size === filteredChunks.length && filteredChunks.length > 0}
+                onChange={e => { setBulkSelected(e.target.checked ? new Set(filteredChunks.map(c => c.id)) : new Set()); setSelectAllMatching(false) }}
                 style={{ accentColor: 'var(--amber)', width: 14, height: 14 }}
               />
               <span className="font-sans text-xs" style={{ color: 'var(--text-muted)' }}>Select all</span>
@@ -617,6 +882,7 @@ export default function ChunksPage() {
                   if (checked) next.add(chunk.id)
                   else next.delete(chunk.id)
                   setBulkSelected(next)
+                  setSelectAllMatching(false)
                 }}
                 onEdit={() => setEditing({ ...chunk })}
                 onApprove={() => toggleApprove(chunk)}

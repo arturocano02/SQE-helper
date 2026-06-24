@@ -120,26 +120,74 @@ export async function PUT(request: Request) {
   return NextResponse.json({ chunk: data })
 }
 
+/** Shared shape for "apply to everything matching this filter" — used by both PATCH and
+ *  DELETE below so a true "select all" (thousands of rows, not just the ~200 the client has
+ *  loaded into memory) never needs the client to know every individual id. Mirrors the same
+ *  filters the GET handler above accepts, so "select all matching the current screen" is
+ *  always exactly the rows the admin is actually looking at. */
+interface ChunkFilter {
+  topic_id?: string
+  subtopic_id?: string
+  source_material_id?: string
+  is_approved?: boolean
+  needs_review?: boolean
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyChunkFilter(query: any, filter: ChunkFilter) {
+  let q = query
+  if (filter.topic_id) q = q.eq('topic_id', filter.topic_id)
+  if (filter.subtopic_id) q = q.eq('subtopic_id', filter.subtopic_id)
+  if (filter.source_material_id) q = q.eq('source_material_id', filter.source_material_id)
+  if (typeof filter.is_approved === 'boolean') q = q.eq('is_approved', filter.is_approved)
+  if (typeof filter.needs_review === 'boolean') q = q.eq('needs_review', filter.needs_review)
+  return q
+}
+
+/** True if the filter has at least one real constraint — without this, an empty `filter: {}`
+ *  from a buggy client would silently match (and bulk-update/delete) every chunk in the table. */
+function filterHasConstraint(filter: ChunkFilter): boolean {
+  return !!(filter.topic_id || filter.subtopic_id || filter.source_material_id
+    || typeof filter.is_approved === 'boolean' || typeof filter.needs_review === 'boolean')
+}
+
 /**
  * PATCH /api/admin/chunks
- * Bulk update is_approved on a set of chunk IDs in a single DB query.
+ * Bulk update is_approved either on an explicit set of chunk IDs, OR on every row matching a
+ * filter — the second form is what "Select all N matching this filter" on the Knowledge Graph
+ * page actually sends, since the client only ever has ~200 rows loaded in memory at once.
  * Body: { ids: string[], is_approved: boolean }
+ *     or { filter: ChunkFilter, is_approved: boolean }  (filter must have ≥1 real constraint)
  */
 export async function PATCH(request: Request) {
   const user = await requireAdmin()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const { ids, is_approved } = body as { ids: string[]; is_approved: boolean }
+  const { ids, filter, is_approved } = body as { ids?: string[]; filter?: ChunkFilter; is_approved: boolean }
 
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return NextResponse.json({ error: 'ids array required' }, { status: 400 })
-  }
   if (typeof is_approved !== 'boolean') {
     return NextResponse.json({ error: 'is_approved boolean required' }, { status: 400 })
   }
 
   const admin = createAdminClient()
+
+  if (filter) {
+    if (!filterHasConstraint(filter)) {
+      return NextResponse.json({ error: 'filter must include at least one constraint — refusing to update every chunk in the table' }, { status: 400 })
+    }
+    const countQuery = applyChunkFilter(admin.from('knowledge_chunks').select('id', { count: 'exact', head: true }), filter)
+    const { count } = await countQuery
+    const updateQuery = applyChunkFilter(admin.from('knowledge_chunks').update({ is_approved }), filter)
+    const { error } = await updateQuery
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true, updated: count ?? 0 })
+  }
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return NextResponse.json({ error: 'ids array (or filter) required' }, { status: 400 })
+  }
+
   const { error } = await admin
     .from('knowledge_chunks')
     .update({ is_approved })
@@ -157,12 +205,27 @@ export async function DELETE(request: Request) {
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')
 
-  // Bulk delete: body contains { ids: string[] }
+  // Bulk delete: body contains { ids: string[] } or { filter: ChunkFilter } (the latter is what
+  // "Select all N matching this filter" sends — see PATCH above for why ids alone don't scale
+  // past the ~200 rows the client actually has loaded).
   const contentType = request.headers.get('content-type') ?? ''
   if (contentType.includes('application/json')) {
     try {
       const body = await request.json()
-      const { ids } = body as { ids?: string[] }
+      const { ids, filter } = body as { ids?: string[]; filter?: ChunkFilter }
+
+      if (filter) {
+        if (!filterHasConstraint(filter)) {
+          return NextResponse.json({ error: 'filter must include at least one constraint — refusing to delete every chunk in the table' }, { status: 400 })
+        }
+        const countQuery = applyChunkFilter(admin.from('knowledge_chunks').select('id', { count: 'exact', head: true }), filter)
+        const { count } = await countQuery
+        const deleteQuery = applyChunkFilter(admin.from('knowledge_chunks').delete(), filter)
+        const { error } = await deleteQuery
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        return NextResponse.json({ ok: true, deleted: count ?? 0 })
+      }
+
       if (Array.isArray(ids) && ids.length > 0) {
         const { error } = await admin.from('knowledge_chunks').delete().in('id', ids)
         if (error) return NextResponse.json({ error: error.message }, { status: 500 })
