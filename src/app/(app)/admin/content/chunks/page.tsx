@@ -80,6 +80,19 @@ function groupChunks(chunks: ChunkRow[], topics: Topic[]): GroupedChunks[] {
   )
 }
 
+// Groups a subtopic's chunks by their source_section breadcrumb, preserving first-seen order
+// (which is sort_order order, since the caller's chunks array is already sorted that way).
+function groupBySourceSection(chunks: ChunkRow[]): Array<{ breadcrumb: string; chunks: ChunkRow[] }> {
+  const order: string[] = []
+  const map = new Map<string, ChunkRow[]>()
+  for (const chunk of chunks) {
+    const key = chunk.source_section?.trim() || '(no source section)'
+    if (!map.has(key)) { map.set(key, []); order.push(key) }
+    map.get(key)!.push(chunk)
+  }
+  return order.map(breadcrumb => ({ breadcrumb, chunks: map.get(breadcrumb)! }))
+}
+
 const EMPTY_NEW_CHUNK = {
   topic_id: '',
   subtopic_name: '',
@@ -638,7 +651,9 @@ export default function ChunksPage() {
                     {verifyState.preview.sections.map((s, i) => (
                       <div key={i} style={{ border: '1px solid var(--surface-border)', borderRadius: 8, padding: 10 }}>
                         <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-                          {s.section}{s.page ? ` (p. ${s.page})` : ''}
+                          {/* s.section is already a full breadcrumb that includes "(p. N)" via
+                              breadcrumbFor — don't append s.page again, or it shows twice. */}
+                          {s.section}
                           {s.chunks.length === 0 && (
                             <span className="ml-2" style={{ color: 'var(--status-wrong)' }}>— NO CHUNKS SAVED</span>
                           )}
@@ -1355,17 +1370,36 @@ function SubtopicGroup({
 
       {!collapsed && (
         <div className="space-y-0">
-          {chunks.map(chunk => (
-            <ChunkListRow
-              key={chunk.id}
-              chunk={chunk}
-              checked={bulkSelected.has(chunk.id)}
-              onToggle={checked => onBulkToggle(chunk.id, checked)}
-              onEdit={() => onEdit({ ...chunk })}
-              onApprove={() => onApprove(chunk)}
-              onDelete={() => onDelete(chunk.id)}
-              indent
-            />
+          {/* Sub-group by source_section (the original document breadcrumb) within this subtopic.
+              A flat list here makes a genuinely-complete document section look incomplete: e.g.
+              "Sole trader" and "Traditional partnerships" can each legitimately have their own
+              parallel "Costs"/"Risk"/"Structure" bullets, and a flat list interleaves them by
+              sort_order so only the first item of each breadcrumb ends up visible near the top,
+              making the rest look missing when they're just further down. Grouping by breadcrumb
+              with a count makes "does this section have everything" answerable at a glance. */}
+          {groupBySourceSection(chunks).map(({ breadcrumb, chunks: sectionChunks }) => (
+            <div key={breadcrumb}>
+              {breadcrumb !== '(no source section)' && (
+                <div
+                  className="font-mono text-[10px] px-8 py-1"
+                  style={{ color: 'var(--text-muted)', background: 'var(--surface-base)' }}
+                >
+                  {breadcrumb} · {sectionChunks.length} chunk{sectionChunks.length !== 1 ? 's' : ''}
+                </div>
+              )}
+              {sectionChunks.map(chunk => (
+                <ChunkListRow
+                  key={chunk.id}
+                  chunk={chunk}
+                  checked={bulkSelected.has(chunk.id)}
+                  onToggle={checked => onBulkToggle(chunk.id, checked)}
+                  onEdit={() => onEdit({ ...chunk })}
+                  onApprove={() => onApprove(chunk)}
+                  onDelete={() => onDelete(chunk.id)}
+                  indent
+                />
+              ))}
+            </div>
           ))}
         </div>
       )}
