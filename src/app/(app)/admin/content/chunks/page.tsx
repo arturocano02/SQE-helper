@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import type { KnowledgeChunk, Topic } from '@/types/database'
 import { createClient } from '@/lib/supabase/client'
@@ -168,6 +168,54 @@ export default function ChunksPage() {
       setVerifyState({ status: 'done', verify: verifyJson, preview: previewJson })
     } catch {
       setVerifyState({ status: 'error', message: 'Network error running coverage check' })
+    }
+  }
+
+  // Backfill — turns "we found N missing sections" into "those N sections now have chunks",
+  // without the admin having to re-run the whole upload flow or write them by hand. Reuses the
+  // existing /api/admin/chunks/backfill route (built earlier for a topic-resolution bug, but it
+  // works for any "section with zero chunks" case: it re-derives the missing set fresh from the
+  // DB every call, so it's correct here too). Loops in small batches since each batch makes real
+  // Claude calls and a single request covering hundreds of missing sections would time out.
+  const [backfillState, setBackfillState] = useState<
+    | { status: 'idle' }
+    | { status: 'running'; processed: number; totalMissing: number; inserted: number }
+    | { status: 'done'; inserted: number }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' })
+  const backfillStopRequested = useRef(false)
+
+  async function runBackfill() {
+    if (!verifySourceId) return
+    backfillStopRequested.current = false
+    setBackfillState({ status: 'running', processed: 0, totalMissing: 0, inserted: 0 })
+    let processed = 0
+    let inserted = 0
+    try {
+      for (;;) {
+        if (backfillStopRequested.current) break
+        const res = await fetch('/api/admin/chunks/backfill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_material_id: verifySourceId, batch_size: 6 }),
+        })
+        const json = await res.json()
+        if (!res.ok) {
+          setBackfillState({ status: 'error', message: json?.error ?? 'Backfill failed' })
+          return
+        }
+        processed += json.processed_this_batch ?? 0
+        inserted += json.chunks_inserted_this_batch ?? 0
+        setBackfillState({ status: 'running', processed, totalMissing: json.total_missing_before ?? 0, inserted })
+        if (json.done) break
+      }
+      setBackfillState({ status: 'done', inserted })
+      // Refresh both the coverage numbers (missing list should shrink/clear) and the main
+      // chunk list (the new rows need to show up — and need approving — in the table below).
+      await runCoverageCheck()
+      load()
+    } catch {
+      setBackfillState({ status: 'error', message: 'Network error running backfill' })
     }
   }
 
@@ -459,7 +507,7 @@ export default function ChunksPage() {
             </span>
             <select
               value={verifySourceId}
-              onChange={e => { setVerifySourceId(e.target.value); setVerifyState({ status: 'idle' }) }}
+              onChange={e => { setVerifySourceId(e.target.value); setVerifyState({ status: 'idle' }); setBackfillState({ status: 'idle' }) }}
               style={{
                 background: 'var(--surface-2)',
                 border: '1px solid var(--surface-border)',
@@ -519,7 +567,57 @@ export default function ChunksPage() {
 
               {verifyState.verify.sections_missing > 0 && (
                 <div className="font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>
-                  Missing sections (no chunks at all):
+                  <div className="flex items-center gap-3 mb-1.5">
+                    <span>Missing sections (no chunks at all):</span>
+                    {backfillState.status !== 'running' && (
+                      <button
+                        onClick={runBackfill}
+                        style={{
+                          background: 'var(--status-wrong)',
+                          color: '#fff',
+                          fontFamily: 'var(--font-dm-sans)',
+                          fontWeight: 600,
+                          fontSize: 12,
+                          padding: '4px 10px',
+                          borderRadius: 6,
+                          border: 'none',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Generate missing chunks ({verifyState.verify.sections_missing})
+                      </button>
+                    )}
+                    {backfillState.status === 'running' && (
+                      <>
+                        <span className="font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                          Generating… {backfillState.processed}/{backfillState.totalMissing || verifyState.verify.sections_missing} processed, {backfillState.inserted} chunks inserted
+                        </span>
+                        <button
+                          onClick={() => { backfillStopRequested.current = true }}
+                          style={{
+                            background: 'transparent',
+                            color: 'var(--text-muted)',
+                            fontFamily: 'var(--font-dm-sans)',
+                            fontSize: 12,
+                            padding: '4px 10px',
+                            borderRadius: 6,
+                            border: '1px solid var(--surface-border)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Stop
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {backfillState.status === 'done' && (
+                    <div className="font-sans text-xs mb-1.5" style={{ color: 'var(--status-correct)' }}>
+                      Done — inserted {backfillState.inserted} new chunks. They're unapproved by default; review them like any other draft below.
+                    </div>
+                  )}
+                  {backfillState.status === 'error' && (
+                    <div className="font-sans text-xs mb-1.5" style={{ color: 'var(--status-wrong)' }}>{backfillState.message}</div>
+                  )}
                   <ul className="mt-1 ml-4 list-disc font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
                     {verifyState.verify.missing_sections.slice(0, 15).map(s => <li key={s}>{s}</li>)}
                   </ul>
