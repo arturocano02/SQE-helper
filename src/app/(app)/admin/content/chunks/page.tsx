@@ -112,6 +112,11 @@ export default function ChunksPage() {
   const [filterApproved, setFilterApproved] = useState<'all' | 'approved' | 'pending' | 'review'>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('tree')
   const [editing, setEditing] = useState<ChunkRow | null>(null)
+  // The free-text "category" input in the edit modal — kept separate from `editing` itself since
+  // it's resolved server-side by name (lookup-or-create) rather than the client needing to know a
+  // subtopic_id. Seeded from whatever subtopic the chunk already has (or '' for Uncategorised)
+  // whenever a different chunk is opened for editing.
+  const [editSubtopicName, setEditSubtopicName] = useState('')
   const [saving, setSaving] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
   // True once the admin explicitly clicks "Select all N matching this filter" — at that point
@@ -156,6 +161,14 @@ export default function ChunksPage() {
       .then(({ data }) => setSourceMaterials((data ?? []) as Array<{ id: string; file_name: string }>))
   }, [])
 
+  useEffect(() => {
+    setEditSubtopicName(editing?.subtopics?.name ?? '')
+    // Deliberately keyed on editing?.id only, not the whole `editing` object — every other field
+    // in the modal calls setEditing({ ...editing, field: x }) on each keystroke, which would
+    // otherwise re-run this and stomp whatever the admin just typed into the subtopic input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing?.id])
+
   async function runCoverageCheck() {
     if (!verifySourceId) return
     setVerifyState({ status: 'loading' })
@@ -192,37 +205,83 @@ export default function ChunksPage() {
   // Claude calls and a single request covering hundreds of missing sections would time out.
   const [backfillState, setBackfillState] = useState<
     | { status: 'idle' }
-    | { status: 'running'; processed: number; totalMissing: number; inserted: number }
-    | { status: 'done'; inserted: number }
+    | { status: 'running'; processed: number; totalMissing: number; inserted: number; dropped: number }
+    | { status: 'done'; inserted: number; dropped: number }
+    | { status: 'stalled'; inserted: number; remaining: number }
     | { status: 'error'; message: string }
   >({ status: 'idle' })
   const backfillStopRequested = useRef(false)
 
+  const BATCH_SIZE = 6
+
   async function runBackfill() {
     if (!verifySourceId) return
     backfillStopRequested.current = false
-    setBackfillState({ status: 'running', processed: 0, totalMissing: 0, inserted: 0 })
+    setBackfillState({ status: 'running', processed: 0, totalMissing: 0, inserted: 0, dropped: 0 })
     let processed = 0
     let inserted = 0
+    let dropped = 0
+    let prevRemaining: number | null = null
+    let stalledCalls = 0
+    // Hard ceiling on how many batches we'll ever run for one click, independent of what the
+    // server reports — this is the actual fix for "without it glitching": a section whose
+    // chunks keep failing to resolve a topic stays in the "missing" set forever (the route
+    // re-derives missing fresh from the DB each call, and a leaf with zero inserted chunks
+    // never starts looking covered), which without a cap would have the client loop call the
+    // route over and over, burning Claude calls with no progress. ceil(initial/batch) is the
+    // expected number of calls if everything succeeds; 3x that plus a small buffer gives real
+    // retries room to work without allowing an unbounded spin.
+    let maxIterations = 50
+    let iterations = 0
+
     try {
       for (;;) {
         if (backfillStopRequested.current) break
+        iterations++
+        if (iterations > maxIterations) {
+          setBackfillState({ status: 'stalled', inserted, remaining: prevRemaining ?? 0 })
+          await runCoverageCheck()
+          load()
+          return
+        }
         const res = await fetch('/api/admin/chunks/backfill', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source_material_id: verifySourceId, batch_size: 6 }),
+          body: JSON.stringify({ source_material_id: verifySourceId, batch_size: BATCH_SIZE }),
         })
         const json = await res.json()
         if (!res.ok) {
           setBackfillState({ status: 'error', message: json?.error ?? 'Backfill failed' })
           return
         }
+        if (iterations === 1) {
+          maxIterations = Math.ceil((json.total_missing_before ?? 0) / BATCH_SIZE) * 3 + 5
+        }
         processed += json.processed_this_batch ?? 0
         inserted += json.chunks_inserted_this_batch ?? 0
-        setBackfillState({ status: 'running', processed, totalMissing: json.total_missing_before ?? 0, inserted })
+        dropped += json.dropped_this_batch ?? 0
+        const remaining = json.remaining_missing ?? 0
+        setBackfillState({ status: 'running', processed, totalMissing: json.total_missing_before ?? 0, inserted, dropped })
+
         if (json.done) break
+
+        // Stall detection: same remaining-count two calls in a row means nothing is actually
+        // getting fixed (every chunk in that batch is being dropped, not inserted) — stop
+        // instead of repeating the same failing batch indefinitely.
+        if (prevRemaining !== null && remaining >= prevRemaining) {
+          stalledCalls++
+          if (stalledCalls >= 2) {
+            setBackfillState({ status: 'stalled', inserted, remaining })
+            await runCoverageCheck()
+            load()
+            return
+          }
+        } else {
+          stalledCalls = 0
+        }
+        prevRemaining = remaining
       }
-      setBackfillState({ status: 'done', inserted })
+      setBackfillState({ status: 'done', inserted, dropped })
       // Refresh both the coverage numbers (missing list should shrink/clear) and the main
       // chunk list (the new rows need to show up — and need approving — in the table below).
       await runCoverageCheck()
@@ -280,6 +339,9 @@ export default function ChunksPage() {
         needs_review: editing.needs_review,
         inferred_difficulty: editing.inferred_difficulty,
         difficulty_reason: editing.difficulty_reason,
+        // Resolved server-side to a subtopic_id (existing match by name, or a new subtopic
+        // created on the fly) — '' explicitly clears it back to Uncategorised.
+        subtopic_name: editSubtopicName,
       }),
     })
     setSaving(false)
@@ -304,11 +366,22 @@ export default function ChunksPage() {
 
   async function bulkApprove(approve: boolean) {
     if (selectAllMatching) {
+      const filter = currentFilter()
+      // The "Select all matching filter" button is also reachable with NO topic/status filter
+      // applied (filterApproved === 'all', no topic picked) — that's a real case, the admin
+      // really might want to approve literally every chunk in the bank, but the server refuses
+      // an empty filter by default as a guardrail. Ask for an explicit, unambiguous confirmation
+      // naming the real total before sending confirm_all — this is what was missing and caused
+      // the "filter must include at least one constraint" alert.
+      const isUnconstrained = Object.keys(filter).length === 0
+      if (isUnconstrained && !confirm(`This will ${approve ? 'approve' : 'reject'} ALL ${total} chunks across every topic — not just what's filtered. Continue?`)) {
+        return
+      }
       setBulkApproving(true)
       const res = await fetch('/api/admin/chunks', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filter: currentFilter(), is_approved: approve }),
+        body: JSON.stringify({ filter, is_approved: approve, confirm_all: isUnconstrained }),
       })
       const json = await res.json().catch(() => null)
       setBulkApproving(false)
@@ -329,6 +402,14 @@ export default function ChunksPage() {
 
   async function bulkDelete() {
     if (selectAllMatching) {
+      // Unlike approve/reject, delete-all-with-no-filter is intentionally NOT supported even
+      // with confirmation — wiping the entire knowledge bank in one click is a much worse
+      // failure mode than an accidental mass-approve (which is just re-reviewable), so this
+      // stays blocked. Pick a topic or status filter first.
+      if (Object.keys(currentFilter()).length === 0) {
+        alert('Pick a topic or approval-status filter first — deleting every chunk in the whole bank at once is blocked on purpose.')
+        return
+      }
       if (!confirm(`Permanently delete all ${total} chunks matching the current filter? This cannot be undone.`)) return
       setBulkDeleting(true)
       const res = await fetch('/api/admin/chunks', {
@@ -625,7 +706,12 @@ export default function ChunksPage() {
                   </div>
                   {backfillState.status === 'done' && (
                     <div className="font-sans text-xs mb-1.5" style={{ color: 'var(--status-correct)' }}>
-                      Done — inserted {backfillState.inserted} new chunks. They're unapproved by default; review them like any other draft below.
+                      Done — inserted {backfillState.inserted} new chunks{backfillState.dropped > 0 ? `, ${backfillState.dropped} couldn't be resolved to a topic and were skipped` : ''}. They're unapproved by default; review them like any other draft below.
+                    </div>
+                  )}
+                  {backfillState.status === 'stalled' && (
+                    <div className="font-sans text-xs mb-1.5" style={{ color: 'var(--status-wrong)' }}>
+                      Stopped — inserted {backfillState.inserted} chunks, but {backfillState.remaining} section{backfillState.remaining !== 1 ? 's' : ''} still {backfillState.remaining !== 1 ? 'have' : 'has'} zero chunks after repeated attempts (likely a recurring topic-resolution issue Claude can't auto-fix). Left for manual review — see the list below.
                     </div>
                   )}
                   {backfillState.status === 'error' && (
@@ -1142,6 +1228,26 @@ export default function ChunksPage() {
                 placeholder="e.g. Business Law › Shareholders › Service Contracts"
                 style={inputStyle}
               />
+            </label>
+
+            <label className="block mb-4">
+              <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
+                Category / subtopic (e.g. &ldquo;Sole trader&rdquo;) — leave blank for Uncategorised
+              </span>
+              <input
+                value={editSubtopicName}
+                onChange={e => setEditSubtopicName(e.target.value)}
+                placeholder="Uncategorised"
+                list="subtopic-suggestions"
+                style={inputStyle}
+              />
+              <datalist id="subtopic-suggestions">
+                {Array.from(new Set(
+                  chunks
+                    .filter(c => c.topic_id === editing.topic_id && c.subtopics?.name)
+                    .map(c => c.subtopics!.name)
+                )).sort().map(name => <option key={name} value={name} />)}
+              </datalist>
             </label>
 
             <label className="block mb-4">

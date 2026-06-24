@@ -98,7 +98,7 @@ export async function PUT(request: Request) {
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const { id, ...fields } = body
+  const { id, subtopic_name, ...fields } = body as { id: string; subtopic_name?: string; [k: string]: unknown }
 
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
@@ -109,11 +109,37 @@ export async function PUT(request: Request) {
   }
 
   const admin = createAdminClient()
+
+  // Editing the category/subtopic by free-text name (e.g. typing "Sole trader" to move a chunk
+  // out of "Uncategorised") — resolved here by name rather than requiring the client to already
+  // know a subtopic_id, the same lookup-or-create pattern the backfill route uses. An empty
+  // string explicitly clears it back to uncategorised.
+  if (typeof subtopic_name === 'string') {
+    const trimmed = subtopic_name.trim()
+    if (!trimmed) {
+      allowed.subtopic_id = null
+    } else {
+      const { data: chunkRow } = await admin.from('knowledge_chunks').select('topic_id').eq('id', id).single()
+      if (chunkRow) {
+        const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        const { data: existingSub } = await admin
+          .from('subtopics').select('id').eq('topic_id', chunkRow.topic_id).eq('slug', slug).maybeSingle()
+        if (existingSub) {
+          allowed.subtopic_id = existingSub.id
+        } else {
+          const { data: created } = await admin
+            .from('subtopics').insert({ topic_id: chunkRow.topic_id, name: trimmed, slug }).select('id').single()
+          if (created) allowed.subtopic_id = created.id
+        }
+      }
+    }
+  }
+
   const { data, error } = await admin
     .from('knowledge_chunks')
     .update(allowed)
     .eq('id', id)
-    .select('*')
+    .select('*, subtopics(name)')
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -157,14 +183,18 @@ function filterHasConstraint(filter: ChunkFilter): boolean {
  * filter — the second form is what "Select all N matching this filter" on the Knowledge Graph
  * page actually sends, since the client only ever has ~200 rows loaded in memory at once.
  * Body: { ids: string[], is_approved: boolean }
- *     or { filter: ChunkFilter, is_approved: boolean }  (filter must have ≥1 real constraint)
+ *     or { filter: ChunkFilter, is_approved: boolean, confirm_all?: boolean }
+ *        (filter must have ≥1 real constraint UNLESS confirm_all is explicitly true — that's
+ *        the "Approve all" case with no topic/status filter applied, i.e. the admin really did
+ *        mean literally every chunk in the table, which the client now asks them to confirm
+ *        explicitly before sending rather than this route just refusing the request outright.)
  */
 export async function PATCH(request: Request) {
   const user = await requireAdmin()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const { ids, filter, is_approved } = body as { ids?: string[]; filter?: ChunkFilter; is_approved: boolean }
+  const { ids, filter, is_approved, confirm_all } = body as { ids?: string[]; filter?: ChunkFilter; is_approved: boolean; confirm_all?: boolean }
 
   if (typeof is_approved !== 'boolean') {
     return NextResponse.json({ error: 'is_approved boolean required' }, { status: 400 })
@@ -173,8 +203,8 @@ export async function PATCH(request: Request) {
   const admin = createAdminClient()
 
   if (filter) {
-    if (!filterHasConstraint(filter)) {
-      return NextResponse.json({ error: 'filter must include at least one constraint — refusing to update every chunk in the table' }, { status: 400 })
+    if (!filterHasConstraint(filter) && confirm_all !== true) {
+      return NextResponse.json({ error: 'filter must include at least one constraint, or confirm_all must be true — refusing to update every chunk in the table' }, { status: 400 })
     }
     const countQuery = applyChunkFilter(admin.from('knowledge_chunks').select('id', { count: 'exact', head: true }), filter)
     const { count } = await countQuery
