@@ -173,6 +173,13 @@ export default function ChunksPage() {
   const scanStopRequested = useRef(false)
   const [scanMoving, setScanMoving] = useState(false)
 
+  // Rename/delete a topic outright — for fixing taxonomy mistakes (e.g. a topic named after the
+  // wrong heading, or one that turned out to have no real content in the source notes at all).
+  // Delete is refused server-side unless the topic has zero chunks and zero questions.
+  const [manageTopicId, setManageTopicId] = useState('')
+  const [manageNewName, setManageNewName] = useState('')
+  const [manageState, setManageState] = useState<{ status: 'idle' | 'saving' | 'error'; message?: string }>({ status: 'idle' })
+
   useEffect(() => {
     const supabase = createClient()
     supabase.from('topics').select('*').order('sort_order').then(({ data }) => {
@@ -378,6 +385,40 @@ export default function ChunksPage() {
     }
     setScanSelected(new Set())
     load()
+  }
+
+  async function renameTopicAction() {
+    if (!manageTopicId || !manageNewName.trim()) return
+    setManageState({ status: 'saving' })
+    const res = await fetch('/api/admin/topics', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: manageTopicId, name: manageNewName.trim() }),
+    })
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      setManageState({ status: 'error', message: json?.error ?? 'Rename failed' })
+      return
+    }
+    setManageState({ status: 'idle' })
+    setTopics(prev => prev.map(t => t.id === manageTopicId ? { ...t, name: manageNewName.trim() } : t))
+  }
+
+  async function deleteTopicAction() {
+    if (!manageTopicId) return
+    const topicName = topics.find(t => t.id === manageTopicId)?.name ?? 'this topic'
+    if (!confirm(`Delete "${topicName}" permanently? This only works if it has zero chunks and zero questions.`)) return
+    setManageState({ status: 'saving' })
+    const res = await fetch(`/api/admin/topics?id=${manageTopicId}`, { method: 'DELETE' })
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      setManageState({ status: 'error', message: json?.error ?? 'Delete failed' })
+      return
+    }
+    setTopics(prev => prev.filter(t => t.id !== manageTopicId))
+    setManageTopicId('')
+    setManageNewName('')
+    setManageState({ status: 'idle' })
   }
 
   // The exact server-side filter the current screen represents — shared between the GET load
@@ -851,6 +892,70 @@ export default function ChunksPage() {
                 </details>
               )}
             </div>
+          )}
+        </div>
+
+        {/* Rename or delete a topic outright — for fixing the taxonomy itself, not just where
+            chunks are filed (e.g. a topic named after the wrong heading from the source notes,
+            or one that turned out to have no real content in the notes at all). */}
+        <div
+          className="mb-6"
+          style={{ border: '1px solid var(--surface-border)', borderRadius: 10, padding: 14, background: 'var(--surface-1, transparent)' }}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-sans text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Manage topics
+            </span>
+            <select
+              value={manageTopicId}
+              onChange={e => {
+                setManageTopicId(e.target.value)
+                setManageNewName(topics.find(t => t.id === e.target.value)?.name ?? '')
+                setManageState({ status: 'idle' })
+              }}
+              style={{
+                background: 'var(--surface-2)', border: '1px solid var(--surface-border)', color: 'var(--text-primary)',
+                borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font-dm-sans)', fontSize: 13, minWidth: 220,
+              }}
+            >
+              <option value="">Select a topic…</option>
+              {topics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+            <input
+              value={manageNewName}
+              onChange={e => setManageNewName(e.target.value)}
+              placeholder="New name"
+              disabled={!manageTopicId}
+              style={{
+                background: 'var(--surface-2)', border: '1px solid var(--surface-border)', color: 'var(--text-primary)',
+                borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font-dm-sans)', fontSize: 13, minWidth: 220,
+              }}
+            />
+            <button
+              onClick={renameTopicAction}
+              disabled={!manageTopicId || !manageNewName.trim() || manageState.status === 'saving'}
+              style={{
+                background: 'var(--amber)', color: '#0A0A08', fontFamily: 'var(--font-dm-sans)', fontWeight: 600, fontSize: 13,
+                padding: '6px 14px', borderRadius: 8, border: 'none',
+                cursor: !manageTopicId ? 'not-allowed' : 'pointer', opacity: !manageTopicId ? 0.6 : 1,
+              }}
+            >
+              Rename
+            </button>
+            <button
+              onClick={deleteTopicAction}
+              disabled={!manageTopicId || manageState.status === 'saving'}
+              style={{
+                background: 'transparent', color: 'var(--status-wrong)', fontFamily: 'var(--font-dm-sans)', fontSize: 13,
+                padding: '6px 14px', borderRadius: 8, border: '1px solid var(--status-wrong)',
+                cursor: !manageTopicId ? 'not-allowed' : 'pointer', opacity: !manageTopicId ? 0.6 : 1,
+              }}
+            >
+              Delete (only if empty)
+            </button>
+          </div>
+          {manageState.status === 'error' && (
+            <div className="mt-2 font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>{manageState.message}</div>
           )}
         </div>
 

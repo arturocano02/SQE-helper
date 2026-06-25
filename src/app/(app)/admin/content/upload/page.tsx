@@ -116,6 +116,11 @@ export default function AdminUploadPage() {
   // kicks in, and now there are two (or more) zombie loops fighting forever, which looks exactly
   // like "pausing and resuming on its own" even though the admin isn't clicking anything.
   const activeExtractions = useRef<Set<string>>(new Set())
+  // Files whose chunks are already extracted and have been tucked out of the way of the active
+  // upload flow. Previously-uploaded files (loaded from the DB on mount) start archived
+  // automatically — only files finished in THIS browser session stay visible until the admin
+  // explicitly archives them, so they get to see the "done" state once before it's hidden.
+  const [archivedFiles, setArchivedFiles] = useState<Set<string>>(new Set())
   // Set by the manual Pause button. Checked once per batch boundary (the only safe place to
   // stop — mid-batch the server has already committed whatever it committed) rather than
   // aborting the in-flight fetch, so nothing partially-written is left in a weird state.
@@ -203,6 +208,14 @@ export default function AdminUploadPage() {
               }
               // else: leave unset — shows the normal "Extract chunks →" / outline-read flow
             }
+          }
+          return next
+        })
+
+        setArchivedFiles(prev => {
+          const next = new Set(prev)
+          for (const m of data) {
+            if (m.chunk_status === 'extracted' && (m.chunks_extracted ?? 0) > 0) next.add(m.file_name)
           }
           return next
         })
@@ -655,7 +668,9 @@ export default function AdminUploadPage() {
     }
   }
 
-  const readyToExtract = uploadedFiles.filter(f => f.status === 'done' && f.source_material_id)
+  const activeUploadedFiles = uploadedFiles.filter(f => !archivedFiles.has(f.file.name))
+  const archivedUploadedFiles = uploadedFiles.filter(f => archivedFiles.has(f.file.name))
+  const readyToExtract = activeUploadedFiles.filter(f => f.status === 'done' && f.source_material_id)
 
   return (
     <main className="min-h-screen" style={{ background: 'var(--surface-base)' }}>
@@ -826,7 +841,7 @@ export default function AdminUploadPage() {
         )}
 
         {/* Uploaded files + extract controls */}
-        {uploadedFiles.length > 0 && (
+        {activeUploadedFiles.length > 0 && (
           <div
             style={{
               background: 'var(--surface-1)',
@@ -837,7 +852,10 @@ export default function AdminUploadPage() {
           >
             {/* Uploaded files list */}
             <div className="divide-y" style={{ borderColor: 'var(--surface-border)' }}>
-              {uploadedFiles.map(entry => (
+              {activeUploadedFiles.map(entry => {
+                const extraction = chunkExtraction[entry.file.name]
+                const fullyExtracted = extraction?.status === 'done'
+                return (
                 <div key={entry.file.name} style={{ padding: '14px 18px' }}>
                   <div className="flex items-center gap-3">
                     <span style={{ color: entry.status === 'done' ? 'var(--status-correct)' : entry.status === 'error' ? 'var(--status-wrong)' : 'var(--amber)' }}>
@@ -861,9 +879,22 @@ export default function AdminUploadPage() {
                         {entry.error}
                       </span>
                     )}
+                    {fullyExtracted && (
+                      <button
+                        onClick={() => setArchivedFiles(prev => new Set(prev).add(entry.file.name))}
+                        title="Tuck this away — you can still find it under Previously uploaded"
+                        style={{
+                          background: 'transparent', border: '1px solid var(--surface-border)', color: 'var(--text-secondary)',
+                          fontFamily: 'var(--font-dm-sans)', fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                        }}
+                      >
+                        Done — move to history
+                      </button>
+                    )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
 
             {/* Extract chunks panel — shown once any file is done */}
@@ -1424,6 +1455,44 @@ export default function AdminUploadPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Previously uploaded — files whose chunks are already extracted, tucked out of the
+            way so this page stays about whatever's actively being worked on. Each one can be
+            brought back into the active list above to re-check or re-extract it. */}
+        {archivedUploadedFiles.length > 0 && (
+          <details className="mb-8" style={{ background: 'var(--surface-1)', border: '1px solid var(--surface-border)', borderRadius: 12 }}>
+            <summary
+              className="font-sans text-sm font-medium cursor-pointer"
+              style={{ color: 'var(--text-secondary)', padding: '14px 18px' }}
+            >
+              Previously uploaded ({archivedUploadedFiles.length})
+            </summary>
+            <div className="divide-y" style={{ borderColor: 'var(--surface-border)' }}>
+              {archivedUploadedFiles.map(entry => (
+                <div key={entry.file.name} className="flex items-center gap-3" style={{ padding: '12px 18px' }}>
+                  <CheckIcon size={14} />
+                  <span className="font-sans text-sm flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+                    {entry.file.name}
+                  </span>
+                  {chunkExtraction[entry.file.name]?.status === 'done' && (
+                    <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
+                      {chunkExtraction[entry.file.name]?.chunksFound ?? 0} chunks
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setArchivedFiles(prev => { const next = new Set(prev); next.delete(entry.file.name); return next })}
+                    style={{
+                      background: 'transparent', border: '1px solid var(--surface-border)', color: 'var(--amber-text)',
+                      fontFamily: 'var(--font-dm-sans)', fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                    }}
+                  >
+                    Bring back
+                  </button>
+                </div>
+              ))}
+            </div>
+          </details>
         )}
 
         {/* How it works */}

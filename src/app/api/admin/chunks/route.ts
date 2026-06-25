@@ -151,6 +151,19 @@ export async function PUT(request: Request) {
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // A chunk's topic is the source of truth — any question or flashcard generated from it
+  // (knowledge_chunk_id, or listed in additional_chunk_ids for multi-rule sample questions)
+  // must move with it, otherwise the question keeps showing up under the topic the chunk just
+  // left. Both MCQs and flashcards live in the same `questions` table (distinguished by `type`),
+  // so one update covers both.
+  if (typeof allowed.topic_id === 'string' && data) {
+    await admin
+      .from('questions')
+      .update({ topic_id: data.topic_id })
+      .or(`knowledge_chunk_id.eq.${id},additional_chunk_ids.cs.{${id}}`)
+  }
+
   return NextResponse.json({ chunk: data })
 }
 
@@ -234,6 +247,14 @@ export async function PATCH(request: Request) {
       .update({ topic_id: move_to_topic_id, subtopic_id: null })
       .in('id', ids)
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    // Same reasoning as the single-chunk PUT above: questions/flashcards generated from these
+    // chunks need to follow them to the new topic, or they'll keep showing up under the old one.
+    const orClauses = ids.map(cid => `knowledge_chunk_id.eq.${cid}`)
+      .concat(ids.map(cid => `additional_chunk_ids.cs.{${cid}}`))
+      .join(',')
+    await admin.from('questions').update({ topic_id: move_to_topic_id }).or(orClauses)
+
     return NextResponse.json({ ok: true, moved: ids.length })
   }
 
