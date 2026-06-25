@@ -31,6 +31,15 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { Difficulty } from '@/types/database'
 
+// Without this, Vercel falls back to the platform default timeout, which is nowhere near long
+// enough for this route: it makes one sequential Claude call per question across every selected
+// topic (up to 100 per topic), so multi-topic runs routinely take minutes. That's the actual
+// cause of "works for the first topic then I have to click Generate again" — the function was
+// being killed mid-stream right around the first/second topic boundary, not the generation logic
+// stalling. Matches the same maxDuration already set on the other long-running admin routes
+// (chunks/extract, chunks/backfill).
+export const maxDuration = 280
+
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const TOPIC_GUIDE = `

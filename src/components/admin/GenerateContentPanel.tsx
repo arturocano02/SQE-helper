@@ -54,6 +54,13 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
   const [includeSampleQuestions, setIncludeSampleQuestions] = useState(false)
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState<ProgressEvent[]>([])
+  // If the function gets cut off mid-run (e.g. a very large multi-topic job pushing past the
+  // server's time limit even with maxDuration set), the stream just ends with no 'done'/'error'
+  // event. Already-completed topics' questions are safely in the DB by then (each topic batch
+  // is inserted as soon as it finishes) — what's missing is only the topics never reached. This
+  // tracks exactly those, so "Generate" after an interruption resumes the rest instead of
+  // resending every topic (which would just pile more questions onto the one(s) already done).
+  const [remainingTopicIds, setRemainingTopicIds] = useState<string[] | null>(null)
   const [done, setDone] = useState(false)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -149,18 +156,27 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
     setSelectedTopicIds(new Set())
   }
 
-  async function generate() {
-    if (selectedTopicIds.size === 0 || running) return
+  // topicIdsOverride lets "Resume remaining topics" re-run with just the leftover set instead of
+  // everything currently checked in the topic picker.
+  async function generate(topicIdsOverride?: string[]) {
+    const idsToSend = topicIdsOverride ?? Array.from(selectedTopicIds)
+    if (idsToSend.length === 0 || running) return
     setRunning(true)
     setDone(false)
-    setLog([])
+    setRemainingTopicIds(null)
+    if (!topicIdsOverride) setLog([])
+    // Map topic_name -> id once up front so a 'topic_done' SSE event (which only carries the
+    // name) can be matched back to an id for the resume calculation below.
+    const nameToId = new Map(topics.map(t => [t.name, t.id]))
+    const completedIds = new Set<string>()
+    let reachedTerminalStage = false
 
     try {
       const res = await fetch('/api/admin/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          topic_ids: Array.from(selectedTopicIds),
+          topic_ids: idsToSend,
           difficulty,
           count_per_topic: countPerTopic,
           status: targetStatus,
@@ -189,9 +205,31 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
           try {
             const event = JSON.parse(line.slice(6)) as ProgressEvent
             setLog(prev => [...prev, event])
-            if (event.stage === 'done' || event.stage === 'error') setDone(true)
+            if (event.stage === 'topic_done' || event.stage === 'topic_skip') {
+              const id = event.topic_name ? nameToId.get(event.topic_name) : undefined
+              if (id) completedIds.add(id)
+            }
+            if (event.stage === 'done' || event.stage === 'error') {
+              reachedTerminalStage = true
+              setDone(true)
+            }
           } catch { /* ignore */ }
         }
+      }
+
+      // Stream ended without a 'done'/'error' event — the function was cut off mid-run, not a
+      // clean finish. Whatever topics already got a 'topic_done'/'topic_skip' event are safely
+      // recorded in the DB; surface the rest as resumable instead of leaving the admin to guess.
+      if (!reachedTerminalStage) {
+        const remaining = idsToSend.filter(id => !completedIds.has(id))
+        if (remaining.length > 0) {
+          setLog(prev => [...prev, {
+            stage: 'error',
+            message: `Stopped partway through (likely a timeout on a large run) — ${completedIds.size} topic${completedIds.size !== 1 ? 's' : ''} finished, ${remaining.length} remaining. Use "Resume remaining topics" below rather than Generate, so the finished ones aren't redone.`,
+          }])
+          setRemainingTopicIds(remaining)
+        }
+        setDone(true)
       }
     } catch (err) {
       setLog(prev => [...prev, { stage: 'error', message: err instanceof Error ? err.message : 'Unknown error' }])
@@ -652,25 +690,48 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
                 <div ref={logEndRef} />
               </div>
 
-              {done && generatedSoFar > 0 && (
+              {done && (generatedSoFar > 0 || remainingTopicIds) && (
                 <div className="mt-4 flex gap-3">
-                  <Link
-                    href="/admin/content/questions"
-                    style={{
-                      background: 'var(--amber)',
-                      color: '#0A0A08',
-                      fontFamily: 'var(--font-dm-sans)',
-                      fontWeight: 600,
-                      fontSize: 13,
-                      padding: '8px 18px',
-                      borderRadius: 8,
-                      display: 'inline-block',
-                    }}
-                  >
-                    Review {itemNoun} →
-                  </Link>
+                  {remainingTopicIds && (
+                    <button
+                      onClick={() => generate(remainingTopicIds)}
+                      disabled={running}
+                      style={{
+                        background: 'var(--amber)',
+                        color: '#0A0A08',
+                        fontFamily: 'var(--font-dm-sans)',
+                        fontWeight: 600,
+                        fontSize: 13,
+                        padding: '8px 18px',
+                        borderRadius: 8,
+                        border: 'none',
+                        cursor: running ? 'not-allowed' : 'pointer',
+                        opacity: running ? 0.6 : 1,
+                      }}
+                    >
+                      Resume remaining {remainingTopicIds.length} topic{remainingTopicIds.length !== 1 ? 's' : ''} →
+                    </button>
+                  )}
+                  {generatedSoFar > 0 && (
+                    <Link
+                      href="/admin/content/questions"
+                      style={{
+                        background: remainingTopicIds ? 'transparent' : 'var(--amber)',
+                        color: remainingTopicIds ? 'var(--text-secondary)' : '#0A0A08',
+                        fontFamily: 'var(--font-dm-sans)',
+                        fontWeight: remainingTopicIds ? 400 : 600,
+                        fontSize: 13,
+                        padding: '8px 18px',
+                        borderRadius: 8,
+                        border: remainingTopicIds ? '1px solid var(--surface-border)' : 'none',
+                        display: 'inline-block',
+                      }}
+                    >
+                      Review {itemNoun} →
+                    </Link>
+                  )}
                   <button
-                    onClick={() => { setLog([]); setDone(false) }}
+                    onClick={() => { setLog([]); setDone(false); setRemainingTopicIds(null) }}
                     style={{
                       background: 'transparent',
                       color: 'var(--text-secondary)',
