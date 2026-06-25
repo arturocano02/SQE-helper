@@ -24,6 +24,15 @@ export default function RecallSessionPage() {
   const [score, setScore] = useState<number | null>(null)
   const [modelAnswer, setModelAnswer] = useState('')
   const [disputeState, setDisputeState] = useState<'idle' | 'sending' | 'sent'>('idle')
+  // Which exact knowledge chunk (and page in the original source notes) this flashcard's rule
+  // came from — /api/sessions/answer already resolves this for every question type that has a
+  // knowledge_chunk_id, MCQ or flashcard alike, so this just needs to be captured and shown here.
+  const [chunkCitation, setChunkCitation] = useState<{
+    rule_text: string
+    source_section: string
+    source_page_start: number | null
+    source_page_end: number | null
+  } | null>(null)
 
   useEffect(() => {
     async function load() {
@@ -67,6 +76,7 @@ export default function RecallSessionPage() {
     setVerdict(data.ai_verdict ?? null)
     setScore(typeof data.ai_score === 'number' ? data.ai_score : null)
     setModelAnswer(data.explanation ?? question.explanation ?? '')
+    setChunkCitation(data.chunk ?? null)
     setPhase('graded')
   }, [questions, currentIndex, sessionId, userAnswer, phase])
 
@@ -86,6 +96,7 @@ export default function RecallSessionPage() {
       setVerdict(null)
       setScore(null)
       setModelAnswer('')
+      setChunkCitation(null)
       setDisputeState('idle')
     }
   }, [questions.length, currentIndex, sessionId, router])
@@ -353,6 +364,24 @@ export default function RecallSessionPage() {
                   {modelAnswer || 'No answer available.'}
                 </p>
               </div>
+
+              {chunkCitation && (
+                <p
+                  className="font-sans text-[11px] mb-4"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  📍 {chunkCitation.source_section}
+                  {chunkCitation.source_page_start && (
+                    <>
+                      {' '}· p.{chunkCitation.source_page_start}
+                      {chunkCitation.source_page_end && chunkCitation.source_page_end !== chunkCitation.source_page_start
+                        ? `–${chunkCitation.source_page_end}`
+                        : ''}
+                      {' '}in your source notes
+                    </>
+                  )}
+                </p>
+              )}
 
               {verdict !== 'correct' && (
                 <div className="flex items-center justify-center mb-4">

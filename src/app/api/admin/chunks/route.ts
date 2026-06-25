@@ -102,10 +102,18 @@ export async function PUT(request: Request) {
 
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
-  // Whitelist updatable fields
+  // Whitelist updatable fields. topic_id is included so a mis-filed chunk can be moved to the
+  // topic it actually belongs to (e.g. via the Knowledge Graph's "scan for missing chunks" tool)
+  // without going through delete-and-recreate.
   const allowed: Record<string, unknown> = {}
-  for (const key of ['rule_text', 'context_text', 'source_section', 'key_terms', 'rule_type', 'is_approved', 'subtopic_id', 'sort_order', 'needs_review', 'inferred_difficulty', 'difficulty_reason']) {
+  for (const key of ['rule_text', 'context_text', 'source_section', 'key_terms', 'rule_type', 'is_approved', 'subtopic_id', 'sort_order', 'needs_review', 'inferred_difficulty', 'difficulty_reason', 'topic_id']) {
     if (key in fields) allowed[key] = fields[key]
+  }
+  // Moving topics almost always invalidates the old subtopic tag (it belonged to the old topic's
+  // taxonomy), so clear it back to Uncategorised unless the caller is explicitly also setting a
+  // new subtopic_name/subtopic_id in the same request.
+  if (typeof allowed.topic_id === 'string' && !('subtopic_id' in fields) && typeof body.subtopic_name !== 'string') {
+    allowed.subtopic_id = null
   }
 
   const admin = createAdminClient()
@@ -200,13 +208,38 @@ export async function PATCH(request: Request) {
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const { ids, filter, is_approved, confirm_all } = body as { ids?: string[]; filter?: ChunkFilter; is_approved: boolean; confirm_all?: boolean }
+  const { ids, filter, is_approved, confirm_all, move_to_topic_id } = body as {
+    ids?: string[]
+    filter?: ChunkFilter
+    is_approved?: boolean
+    confirm_all?: boolean
+    move_to_topic_id?: string
+  }
+
+  const admin = createAdminClient()
+
+  // Bulk re-topic — used by the "scan for missing chunks" tool to move a batch of confirmed
+  // mis-filed chunks in one action rather than the admin editing each one individually. Always
+  // ids-based (never filter-based): this action only ever follows a discrete reviewed list, not
+  // an open-ended filter, so there's no "select all matching" version of it.
+  if (move_to_topic_id) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return NextResponse.json({ error: 'ids array required for move_to_topic_id' }, { status: 400 })
+    }
+    // Subtopic tags belong to the old topic's taxonomy, so they're cleared on move — the chunk
+    // shows up as Uncategorised under its new topic until someone re-tags it, same as any other
+    // freshly-extracted chunk.
+    const { error } = await admin
+      .from('knowledge_chunks')
+      .update({ topic_id: move_to_topic_id, subtopic_id: null })
+      .in('id', ids)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true, moved: ids.length })
+  }
 
   if (typeof is_approved !== 'boolean') {
     return NextResponse.json({ error: 'is_approved boolean required' }, { status: 400 })
   }
-
-  const admin = createAdminClient()
 
   if (filter) {
     if (!filterHasConstraint(filter) && confirm_all !== true) {

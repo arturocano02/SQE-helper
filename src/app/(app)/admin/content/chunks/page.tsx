@@ -48,6 +48,15 @@ interface PreviewResult {
   }>
 }
 
+interface ScanMatch {
+  id: string
+  rule_text: string
+  source_section: string | null
+  current_topic_name: string
+  current_subtopic_name: string | null
+  reason: string
+}
+
 interface GroupedChunks {
   topic: Topic
   subtopics: Array<{
@@ -148,6 +157,21 @@ export default function ChunksPage() {
     | { status: 'error'; message: string }
     | { status: 'done'; verify: VerifyResult; preview: PreviewResult | null }
   >({ status: 'idle' })
+
+  // "Find missing chunks for a topic" — for when coverage looks fine overall (98%+, ~1500
+  // chunks) but one specific topic has none: that's not missing content, it's content that got
+  // filed under the wrong topic during extraction. Scans every chunk NOT under the picked topic
+  // and surfaces ones that plausibly belong there, via /api/admin/chunks/scan-topic.
+  const [scanTopicId, setScanTopicId] = useState('')
+  const [scanState, setScanState] = useState<
+    | { status: 'idle' }
+    | { status: 'running'; checked: number; total: number; matches: ScanMatch[] }
+    | { status: 'done'; matches: ScanMatch[] }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' })
+  const [scanSelected, setScanSelected] = useState<Set<string>>(new Set())
+  const scanStopRequested = useRef(false)
+  const [scanMoving, setScanMoving] = useState(false)
 
   useEffect(() => {
     const supabase = createClient()
@@ -289,6 +313,71 @@ export default function ChunksPage() {
     } catch {
       setBackfillState({ status: 'error', message: 'Network error running backfill' })
     }
+  }
+
+  const SCAN_BATCH_SIZE = 15
+
+  async function runScan() {
+    if (!scanTopicId) return
+    scanStopRequested.current = false
+    setScanSelected(new Set())
+    setScanState({ status: 'running', checked: 0, total: 0, matches: [] })
+    let offset = 0
+    let checked = 0
+    const matches: ScanMatch[] = []
+    // Same "re-derive fresh, no drifting checkpoint" resumable-batch shape as runBackfill —
+    // a hard iteration ceiling so a misbehaving batch (e.g. repeated AI parse failures) can't
+    // spin the loop forever without making progress.
+    let iterations = 0
+    const maxIterations = 400
+
+    try {
+      for (;;) {
+        if (scanStopRequested.current) break
+        iterations++
+        if (iterations > maxIterations) {
+          setScanState({ status: 'error', message: 'Stopped after an unusually large number of batches — please re-run to continue from where this left off.' })
+          return
+        }
+        const res = await fetch('/api/admin/chunks/scan-topic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic_id: scanTopicId, offset, batch_size: SCAN_BATCH_SIZE }),
+        })
+        const json = await res.json()
+        if (!res.ok) {
+          setScanState({ status: 'error', message: json?.error ?? 'Scan failed' })
+          return
+        }
+        checked = json.next_offset ?? checked
+        matches.push(...(json.matches ?? []))
+        setScanState({ status: 'running', checked, total: json.candidates_total ?? 0, matches: [...matches] })
+        if (json.done) break
+        offset = json.next_offset
+      }
+      setScanState({ status: 'done', matches })
+      setScanSelected(new Set(matches.map(m => m.id)))
+    } catch {
+      setScanState({ status: 'error', message: 'Network error running scan' })
+    }
+  }
+
+  async function moveScanSelected() {
+    if (scanSelected.size === 0 || !scanTopicId) return
+    setScanMoving(true)
+    const res = await fetch('/api/admin/chunks', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: Array.from(scanSelected), move_to_topic_id: scanTopicId }),
+    })
+    setScanMoving(false)
+    if (!res.ok) { alert('Move failed'); return }
+    if (scanState.status === 'done' || scanState.status === 'running') {
+      const remaining = scanState.matches.filter(m => !scanSelected.has(m.id))
+      setScanState({ status: 'done', matches: remaining })
+    }
+    setScanSelected(new Set())
+    load()
   }
 
   // The exact server-side filter the current screen represents — shared between the GET load
@@ -760,6 +849,154 @@ export default function ChunksPage() {
                     ))}
                   </div>
                 </details>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Find missing chunks for a topic — for "98% coverage but topic X has zero chunks",
+            which is a mis-filing problem (content landed under the wrong topic), not a missing
+            content problem. */}
+        <div
+          className="mb-6"
+          style={{ border: '1px solid var(--surface-border)', borderRadius: 10, padding: 14, background: 'var(--surface-1, transparent)' }}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-sans text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+              Find chunks that may belong to a topic
+            </span>
+            <select
+              value={scanTopicId}
+              onChange={e => { setScanTopicId(e.target.value); setScanState({ status: 'idle' }); setScanSelected(new Set()) }}
+              style={{
+                background: 'var(--surface-2)',
+                border: '1px solid var(--surface-border)',
+                color: 'var(--text-primary)',
+                borderRadius: 8,
+                padding: '6px 12px',
+                fontFamily: 'var(--font-dm-sans)',
+                fontSize: 13,
+                minWidth: 220,
+              }}
+            >
+              <option value="">Select a topic…</option>
+              {topics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+            {scanState.status !== 'running' ? (
+              <button
+                onClick={runScan}
+                disabled={!scanTopicId}
+                style={{
+                  background: 'var(--amber)',
+                  color: '#0A0A08',
+                  fontFamily: 'var(--font-dm-sans)',
+                  fontWeight: 600,
+                  fontSize: 13,
+                  padding: '6px 14px',
+                  borderRadius: 8,
+                  border: 'none',
+                  cursor: !scanTopicId ? 'not-allowed' : 'pointer',
+                  opacity: !scanTopicId ? 0.6 : 1,
+                }}
+              >
+                Scan all other topics
+              </button>
+            ) : (
+              <>
+                <span className="font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Checked {scanState.checked}/{scanState.total} candidates, found {scanState.matches.length} so far…
+                </span>
+                <button
+                  onClick={() => { scanStopRequested.current = true }}
+                  style={{
+                    background: 'transparent',
+                    color: 'var(--text-muted)',
+                    fontFamily: 'var(--font-dm-sans)',
+                    fontSize: 12,
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    border: '1px solid var(--surface-border)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Stop
+                </button>
+              </>
+            )}
+            <span className="font-sans text-xs" style={{ color: 'var(--text-muted)' }}>
+              Scans every chunk filed under a different topic (Uncategorised ones first) and flags ones that plausibly belong here instead — for when coverage looks complete but a topic still has no chunks.
+            </span>
+          </div>
+
+          {scanState.status === 'error' && (
+            <div className="mt-3 font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>{scanState.message}</div>
+          )}
+
+          {(scanState.status === 'running' || scanState.status === 'done') && (
+            <div className="mt-4">
+              {scanState.matches.length === 0 ? (
+                scanState.status === 'done' && (
+                  <div className="font-sans text-sm" style={{ color: 'var(--text-muted)' }}>
+                    No likely matches found elsewhere in the bank.
+                  </div>
+                )
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {scanState.matches.length} candidate{scanState.matches.length !== 1 ? 's' : ''} found — {scanSelected.size} selected
+                    </span>
+                    <button
+                      onClick={moveScanSelected}
+                      disabled={scanSelected.size === 0 || scanMoving}
+                      style={{
+                        background: 'var(--status-correct)',
+                        color: '#000',
+                        fontFamily: 'var(--font-dm-sans)',
+                        fontWeight: 600,
+                        fontSize: 12,
+                        padding: '5px 12px',
+                        borderRadius: 6,
+                        border: 'none',
+                        cursor: scanSelected.size === 0 || scanMoving ? 'not-allowed' : 'pointer',
+                        opacity: scanSelected.size === 0 || scanMoving ? 0.6 : 1,
+                      }}
+                    >
+                      {scanMoving ? 'Moving…' : `Move ${scanSelected.size} selected here`}
+                    </button>
+                  </div>
+                  <div className="space-y-1.5 max-h-96 overflow-y-auto pr-2">
+                    {scanState.matches.map(m => (
+                      <label
+                        key={m.id}
+                        className="flex items-start gap-2.5 p-2.5 rounded cursor-pointer"
+                        style={{ border: '1px solid var(--surface-border)', background: 'var(--surface-2)' }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={scanSelected.has(m.id)}
+                          onChange={e => {
+                            const next = new Set(scanSelected)
+                            if (e.target.checked) next.add(m.id)
+                            else next.delete(m.id)
+                            setScanSelected(next)
+                          }}
+                          style={{ accentColor: 'var(--status-correct)', width: 14, height: 14, marginTop: 3, flexShrink: 0 }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-sans text-sm" style={{ color: 'var(--text-primary)', lineHeight: 1.5 }}>{m.rule_text}</p>
+                          <p className="font-sans text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                            Currently under: {m.current_topic_name}{m.current_subtopic_name ? ` › ${m.current_subtopic_name}` : ' › Uncategorised'}
+                            {m.source_section ? ` · ${m.source_section}` : ''}
+                          </p>
+                          {m.reason && (
+                            <p className="font-sans text-[11px] mt-1 italic" style={{ color: 'var(--amber-text)' }}>{m.reason}</p>
+                          )}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
           )}
