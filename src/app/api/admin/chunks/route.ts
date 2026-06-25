@@ -167,6 +167,12 @@ function applyChunkFilter(query: any, filter: ChunkFilter) {
   if (filter.source_material_id) q = q.eq('source_material_id', filter.source_material_id)
   if (typeof filter.is_approved === 'boolean') q = q.eq('is_approved', filter.is_approved)
   if (typeof filter.needs_review === 'boolean') q = q.eq('needs_review', filter.needs_review)
+  // PostgREST refuses a bare UPDATE/DELETE with zero filters at all ("UPDATE requires a WHERE
+  // clause") regardless of what our own filterHasConstraint/confirm_all check decided — that's
+  // the literal "approve all, no topic/status filter" case. `id is not null` is true for every
+  // row (id is a non-null PK), so it satisfies PostgREST's WHERE requirement while still
+  // matching the entire table, same as no filter would have.
+  if (!filterHasConstraint(filter)) q = q.not('id', 'is', null)
   return q
 }
 
