@@ -73,20 +73,23 @@ const VALID_SLUGS = new Set([
 ])
 
 // Shuffles a generated MCQ's options so the correct answer isn't biased toward any one letter.
+// Tracks the *position* (index) being moved rather than matching on option text afterwards —
+// matching by text would silently mis-tag the correct answer if two options ever happened to
+// share identical wording. Fisher-Yates on the indices gives a uniform 1-in-5 chance of landing
+// on any letter A-E, so across many questions the correct answer isn't predictably "always A".
 function shuffleCorrectAnswer(q: GeneratedQuestion): GeneratedQuestion {
   if (!q.options || q.options.length !== 5 || !q.correct_answer) return q
-  const correctOption = q.options.find(o => o.label === q.correct_answer)
-  if (!correctOption) return q
+  const correctIndex = q.options.findIndex(o => o.label === q.correct_answer)
+  if (correctIndex === -1) return q
 
   const labels = ['A', 'B', 'C', 'D', 'E']
-  const texts = q.options.map(o => o.text)
-  // Fisher-Yates shuffle of option texts
-  for (let i = texts.length - 1; i > 0; i--) {
+  const order = [0, 1, 2, 3, 4]
+  for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
-    ;[texts[i], texts[j]] = [texts[j], texts[i]]
+    ;[order[i], order[j]] = [order[j], order[i]]
   }
-  const newOptions = labels.map((label, i) => ({ label, text: texts[i] }))
-  const newCorrectLabel = newOptions.find(o => o.text === correctOption.text)?.label ?? q.correct_answer
+  const newOptions = labels.map((label, i) => ({ label, text: q.options[order[i]].text }))
+  const newCorrectLabel = labels[order.indexOf(correctIndex)]
 
   return { ...q, options: newOptions, correct_answer: newCorrectLabel }
 }
@@ -196,7 +199,12 @@ export async function POST(request: Request) {
     }
   }
 
-  // Sort least-used-first (random tiebreak among equally-used chunks), then take what we need.
+  // Sort least-used-first (random tiebreak among equally-used chunks). Every never-used chunk
+  // sorts ahead of every chunk used once, which sorts ahead of chunks used twice, etc., so the
+  // generation loop below exhausts each "usage tier" before it can repeat a chunk. Not sliced
+  // here — the loop below stops once it has cappedCount successes, but keeps walking further
+  // down this list on failures instead of being capped to a narrow pool that would force early
+  // repeats.
   const shuffled = [...chunks]
     .map(c => ({ c, jitter: Math.random() }))
     .sort((a, b) => {
@@ -204,7 +212,6 @@ export async function POST(request: Request) {
       return diff !== 0 ? diff : a.jitter - b.jitter
     })
     .map(x => x.c)
-    .slice(0, cappedCount)
 
   // Pull per-topic sample-question style references (verbatim quotes extracted from
   // uploaded sample papers) to inspire tone/structure — never copied verbatim into output.

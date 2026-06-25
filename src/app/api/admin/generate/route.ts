@@ -153,19 +153,23 @@ interface GeneratedQ {
 }
 
 // Shuffles a generated MCQ's options so the correct answer isn't biased toward any one letter.
+// Tracks the *position* (index) being moved rather than matching on option text afterwards —
+// matching by text would silently mis-tag the correct answer if two options ever happened to
+// share identical wording. Fisher-Yates on the indices gives a uniform 1-in-5 chance of landing
+// on any letter A-E, so across many questions the correct answer isn't predictably "always A".
 function shuffleCorrectAnswer(q: GeneratedQ): GeneratedQ {
   if (!q.options || q.options.length !== 5 || !q.correct_answer) return q
-  const correctOption = q.options.find(o => o.label === q.correct_answer)
-  if (!correctOption) return q
+  const correctIndex = q.options.findIndex(o => o.label === q.correct_answer)
+  if (correctIndex === -1) return q
 
   const labels = ['A', 'B', 'C', 'D', 'E']
-  const texts = q.options.map(o => o.text)
-  for (let i = texts.length - 1; i > 0; i--) {
+  const order = [0, 1, 2, 3, 4]
+  for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
-    ;[texts[i], texts[j]] = [texts[j], texts[i]]
+    ;[order[i], order[j]] = [order[j], order[i]]
   }
-  const newOptions = labels.map((label, i) => ({ label, text: texts[i] }))
-  const newCorrectLabel = newOptions.find(o => o.text === correctOption.text)?.label ?? q.correct_answer
+  const newOptions = labels.map((label, i) => ({ label, text: q.options[order[i]].text }))
+  const newCorrectLabel = labels[order.indexOf(correctIndex)]
 
   return { ...q, options: newOptions, correct_answer: newCorrectLabel }
 }
@@ -312,6 +316,16 @@ export async function POST(request: Request) {
             }
           }
 
+          // Sorting ascending by usage count means every chunk with 0 linked questions sorts
+          // before every chunk with 1+, which sort before chunks with 2+, and so on — so the
+          // loop below always exhausts the "never used" tier of this topic's chunks before it
+          // can possibly touch a chunk that's already been used once. Repeats only become
+          // possible once literally every chunk has at least one question, exactly as intended.
+          // Deliberately NOT sliced to a small candidate pool here: a narrow slice (e.g. 2x the
+          // requested count) would force a fallback into already-used chunks whenever enough
+          // attempts in that slice failed to parse, even though plenty of genuinely fresh chunks
+          // existed further down the list. Walking the full sorted list lets the loop below keep
+          // reaching for fresh chunks until it actually runs out of them.
           const shuffled = [...chunks]
             .map(c => ({ c, jitter: Math.random() }))
             .sort((a, b) => {
@@ -319,7 +333,6 @@ export async function POST(request: Request) {
               return diff !== 0 ? diff : a.jitter - b.jitter
             })
             .map(x => x.c)
-            .slice(0, clampedCount * 2)
 
           // Per-topic sample-question style references — literal exact-text excerpts from real
           // sample questions. Only fetched if the admin has explicitly opted in, since these
@@ -339,11 +352,21 @@ export async function POST(request: Request) {
               .filter((s): s is string => !!s)
           }
 
-          const topicRows: Array<Record<string, unknown>> = []
+          let topicGeneratedCount = 0
           let chunkIndex = 0
 
+          // Each row is inserted right after it's generated, not batched up and inserted once
+          // the whole topic's loop finishes. That batching was the actual cause of "resuming
+          // redoes work that already finished" — if the function got cut off at, say, chunk 8/10
+          // of a topic, those 8 generated questions were sitting only in memory and vanished with
+          // the process, so resuming had no choice but to redo the whole topic from chunk 1. With
+          // per-row inserts, those 8 are already saved by the time of a crash. On resume, the
+          // chunk-selection usage counts above are re-queried fresh from the DB and now correctly
+          // show those 8 chunks as used, so the topic naturally continues from chunk 9 onward —
+          // no special "partial topic" bookkeeping needed, it falls out of the existing
+          // least-used-first selection.
           for (const chunk of shuffled) {
-            if (topicRows.length >= clampedCount) break
+            if (topicGeneratedCount >= clampedCount) break
 
             chunkIndex++
             totalAttempted++
@@ -363,7 +386,7 @@ export async function POST(request: Request) {
               const card = await generateFlashcard(chunk.rule_text, chunk.context_text, topic.name)
               if (!card) continue
               const resolvedTopicId = slugToId.get(card.topic_slug) ?? topic.id
-              topicRows.push({
+              await admin.from('questions').insert({
                 topic_id: resolvedTopicId,
                 knowledge_chunk_id: chunk.id,
                 type: 'flashcard',
@@ -375,6 +398,8 @@ export async function POST(request: Request) {
                 status: targetStatus,
                 source_file: 'admin-generated',
               })
+              topicGeneratedCount++
+              totalGenerated++
               continue
             }
 
@@ -383,7 +408,7 @@ export async function POST(request: Request) {
 
             const resolvedTopicId = slugToId.get(q.topic_slug) ?? topic.id
 
-            topicRows.push({
+            await admin.from('questions').insert({
               topic_id: resolvedTopicId,
               knowledge_chunk_id: chunk.id,
               type: 'mcq',
@@ -395,12 +420,8 @@ export async function POST(request: Request) {
               status: targetStatus,
               source_file: 'admin-generated',
             })
-          }
-
-          // Batch insert for this topic
-          if (topicRows.length > 0) {
-            await admin.from('questions').insert(topicRows)
-            totalGenerated += topicRows.length
+            topicGeneratedCount++
+            totalGenerated++
           }
 
           send({
@@ -408,7 +429,7 @@ export async function POST(request: Request) {
             topic_name: topic.name,
             topic_index: topicIndex + 1,
             topics_total: topicsData.length,
-            topic_generated: topicRows.length,
+            topic_generated: topicGeneratedCount,
             generated_so_far: totalGenerated,
           })
         }
