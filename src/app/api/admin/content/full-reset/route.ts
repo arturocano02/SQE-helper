@@ -27,24 +27,33 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 
+/**
+ * Deletes every row in `table`, in small batches rather than one `.in(column, allIds)` call.
+ * PostgREST turns `.in()` into a literal `id=in.(uuid1,uuid2,...)` query string on the underlying
+ * REST request — with thousands of chunks, that one URL grows past Cloudflare's request-URI
+ * length limit and the whole reset fails with a 414, even though the delete itself would have
+ * been fine. Deleting ~150 rows at a time keeps every individual request small while still
+ * working through the entire table — same end result ("everything gone"), just in parts.
+ */
 async function deleteAllIds(
   admin: ReturnType<typeof createAdminClient>,
   table: string,
   column = 'id',
 ): Promise<number> {
-  const ids: string[] = []
-  const PAGE_SIZE = 1000
-  for (let offset = 0; ; offset += PAGE_SIZE) {
-    const { data, error } = await admin.from(table).select(column).range(offset, offset + PAGE_SIZE - 1)
+  const BATCH_SIZE = 150
+  let total = 0
+  while (true) {
+    const { data, error } = await admin.from(table).select(column).limit(BATCH_SIZE)
     if (error) throw new Error(`${table}: ${error.message}`)
     const rows = (data ?? []) as unknown as Array<Record<string, string>>
-    ids.push(...rows.map(r => r[column]))
-    if (!data || data.length < PAGE_SIZE) break
+    if (rows.length === 0) break
+    const ids = rows.map(r => r[column])
+    const { error: delErr } = await admin.from(table).delete().in(column, ids)
+    if (delErr) throw new Error(`${table} delete: ${delErr.message}`)
+    total += ids.length
+    if (rows.length < BATCH_SIZE) break
   }
-  if (ids.length === 0) return 0
-  const { error } = await admin.from(table).delete().in(column, ids)
-  if (error) throw new Error(`${table} delete: ${error.message}`)
-  return ids.length
+  return total
 }
 
 export async function POST() {
