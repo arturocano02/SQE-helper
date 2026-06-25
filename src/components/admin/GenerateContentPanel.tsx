@@ -634,7 +634,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
               )}
             </div>
             <button
-              onClick={generate}
+              onClick={() => generate()}
               disabled={totalSelected === 0 || running}
               style={{
                 background: totalSelected === 0 || running ? 'var(--surface-3)' : 'var(--amber)',
