@@ -33,7 +33,7 @@ function RecallLauncherInner() {
   const [mastery, setMastery] = useState<Map<string, UserTopicMastery>>(new Map())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [difficulty, setDifficulty] = useState<Difficulty | 'any'>('any')
-  const [count, setCount] = useState(20)
+  const [count, setCount] = useState(10)
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -105,7 +105,7 @@ function RecallLauncherInner() {
             </Link>
             <h1 className="font-serif text-2xl" style={{ color: 'var(--text-primary)' }}>Active Recall</h1>
             <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Quick rule-recall flashcards
+              Pick the topics you want below — there&apos;s no preset deck, you build your own.
             </p>
           </div>
           <Button onClick={handleStart} disabled={selected.size === 0} loading={launching} size="lg">
@@ -179,6 +179,12 @@ function RecallLauncherInner() {
           >
             {error}
           </div>
+        )}
+
+        {selected.size === 0 && topics.length > 0 && (
+          <p className="font-sans text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+            Tap a topic card below to add it — select as many as you like, then hit &quot;Start Recall.&quot;
+          </p>
         )}
 
         {topics.length > 0 ? (

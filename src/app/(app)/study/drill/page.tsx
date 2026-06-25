@@ -42,7 +42,7 @@ function DrillLauncherInner() {
       ? preselectedDifficulty
       : 'any'
   )
-  const [count, setCount] = useState(25)
+  const [count, setCount] = useState(10)
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -121,7 +121,7 @@ function DrillLauncherInner() {
               Topic Drill
             </h1>
             <p className="font-sans text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Select topics and start practising
+              Pick the topics you want below — there&apos;s no preset session, you build your own.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -223,6 +223,12 @@ function DrillLauncherInner() {
           </div>
         )}
 
+
+        {selected.size === 0 && (
+          <p className="font-sans text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+            Tap a topic card below to add it — select as many as you like, then hit &quot;Start Drill.&quot;
+          </p>
+        )}
 
         {/* Topic grid */}
         {filteredTopics.length > 0 ? (

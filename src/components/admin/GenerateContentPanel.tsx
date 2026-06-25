@@ -63,6 +63,13 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
   const [remainingTopicIds, setRemainingTopicIds] = useState<string[] | null>(null)
   const [done, setDone] = useState(false)
   const logEndRef = useRef<HTMLDivElement>(null)
+  // A run that gets cut off (timeout, dead connection) retries itself once automatically before
+  // asking the admin to click "Resume remaining topics" — most interruptions are a one-off stall,
+  // not a real problem, so this saves a manual click in the common case. Reset whenever the admin
+  // starts a brand-new run (topicIdsOverride is undefined); NOT reset across the auto-retry's own
+  // recursive call, so a run that fails twice in a row still stops and asks for a manual click
+  // rather than retrying forever.
+  const autoRetriedRef = useRef(false)
 
   const [guideText, setGuideText] = useState('')
   const [guideUpdatedAt, setGuideUpdatedAt] = useState<string | null>(null)
@@ -164,7 +171,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
     setRunning(true)
     setDone(false)
     setRemainingTopicIds(null)
-    if (!topicIdsOverride) setLog([])
+    if (!topicIdsOverride) { setLog([]); autoRetriedRef.current = false }
     // Map topic_name -> id once up front so a 'topic_done' SSE event (which only carries the
     // name) can be matched back to an id for the resume calculation below.
     const nameToId = new Map(topics.map(t => [t.name, t.id]))
@@ -184,13 +191,28 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
     }
 
     // Shared by both a clean-but-incomplete stream end AND a watchdog abort — either way the
-    // admin needs the same thing: know what finished, what didn't, and a way to continue.
-    function reportIncomplete(reason: string) {
+    // admin needs the same thing: know what finished, what didn't, and a way to continue. Tries
+    // once to resume the remaining topics automatically before handing control back to the admin
+    // — most interruptions are a one-off network/Claude stall, so a single silent retry clears
+    // the large majority of them without the admin needing to notice or click anything.
+    async function reportIncomplete(reason: string) {
       const remaining = idsToSend.filter(id => !completedIds.has(id))
+
+      if (remaining.length > 0 && !autoRetriedRef.current) {
+        autoRetriedRef.current = true
+        setLog(prev => [...prev, {
+          stage: 'error',
+          message: `${reason} — ${completedIds.size} topic${completedIds.size !== 1 ? 's' : ''} finished, ${remaining.length} remaining. Retrying automatically…`,
+        }])
+        if (watchdog) clearTimeout(watchdog)
+        await generate(remaining)
+        return
+      }
+
       setLog(prev => [...prev, {
         stage: 'error',
         message: remaining.length > 0
-          ? `${reason} — ${completedIds.size} topic${completedIds.size !== 1 ? 's' : ''} finished, ${remaining.length} remaining. Use "Resume remaining topics" below rather than Generate, so the finished ones aren't redone.`
+          ? `${reason} — ${completedIds.size} topic${completedIds.size !== 1 ? 's' : ''} finished, ${remaining.length} remaining. Automatic retry already attempted and also stalled — use "Resume remaining topics" below.`
           : `${reason} — all selected topics had at least started by then; check the questions list to see what actually got saved before retrying.`,
       }])
       if (remaining.length > 0) setRemainingTopicIds(remaining)
@@ -250,11 +272,11 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
       // clean finish. Whatever topics already got a 'topic_done'/'topic_skip' event are safely
       // recorded in the DB; surface the rest as resumable instead of leaving the admin to guess.
       if (!reachedTerminalStage) {
-        reportIncomplete('Stopped partway through (likely a timeout on a large run)')
+        await reportIncomplete('Stopped partway through (likely a timeout on a large run)')
       }
     } catch (err) {
       if (controller.signal.aborted) {
-        reportIncomplete('No response for 90s — treating the connection as dead')
+        await reportIncomplete('No response for 90s — treating the connection as dead')
       } else {
         setLog(prev => [...prev, { stage: 'error', message: err instanceof Error ? err.message : 'Unknown error' }])
         setDone(true)

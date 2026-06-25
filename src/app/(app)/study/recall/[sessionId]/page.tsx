@@ -24,6 +24,8 @@ export default function RecallSessionPage() {
   const [score, setScore] = useState<number | null>(null)
   const [modelAnswer, setModelAnswer] = useState('')
   const [disputeState, setDisputeState] = useState<'idle' | 'sending' | 'sent'>('idle')
+  const [disputeModalOpen, setDisputeModalOpen] = useState(false)
+  const [disputeReason, setDisputeReason] = useState('')
   // Which exact knowledge chunk (and page in the original source notes) this flashcard's rule
   // came from — /api/sessions/answer already resolves this for every question type that has a
   // knowledge_chunk_id, MCQ or flashcard alike, so this just needs to be captured and shown here.
@@ -98,22 +100,30 @@ export default function RecallSessionPage() {
       setModelAnswer('')
       setChunkCitation(null)
       setDisputeState('idle')
+      setDisputeModalOpen(false)
+      setDisputeReason('')
     }
   }, [questions.length, currentIndex, sessionId, router])
 
-  const submitDispute = useCallback(async () => {
+  // reason is optional — the textarea in the popup can be left blank and this still sends,
+  // it just won't have the student's own explanation attached.
+  const submitDispute = useCallback(async (reason: string) => {
     const question = questions[currentIndex]
     if (!question) return
     setDisputeState('sending')
+    const trimmedReason = reason.trim()
     await fetch('/api/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         feedback_type: 'flashcard_dispute',
         question_id: question.id,
-        description: `Student's answer: "${userAnswer.trim()}"\n\nAI verdict: ${verdict} (score ${score ?? '—'})\n\nModel answer: ${modelAnswer}`,
+        description: `Student's answer: "${userAnswer.trim()}"\n\nAI verdict: ${verdict} (score ${score ?? '—'})\n\nModel answer: ${modelAnswer}`
+          + (trimmedReason ? `\n\nStudent's explanation: ${trimmedReason}` : ''),
       }),
     })
+    setDisputeModalOpen(false)
+    setDisputeReason('')
     setDisputeState('sent')
   }, [questions, currentIndex, userAnswer, verdict, score, modelAnswer])
 
@@ -391,19 +401,97 @@ export default function RecallSessionPage() {
                     </p>
                   ) : (
                     <button
-                      onClick={submitDispute}
-                      disabled={disputeState === 'sending'}
+                      onClick={() => setDisputeModalOpen(true)}
                       className="font-sans text-xs underline"
                       style={{
                         color: 'var(--text-muted)',
                         background: 'transparent',
                         border: 'none',
-                        cursor: disputeState === 'sending' ? 'wait' : 'pointer',
+                        cursor: 'pointer',
                       }}
                     >
-                      {disputeState === 'sending' ? 'Sending…' : 'I believe my answer was actually correct →'}
+                      I believe my answer was actually correct →
                     </button>
                   )}
+                </div>
+              )}
+
+              {disputeModalOpen && (
+                <div
+                  className="fixed inset-0 flex items-center justify-center px-5 z-50"
+                  style={{ background: 'rgba(0,0,0,0.6)' }}
+                  onClick={() => { if (disputeState !== 'sending') setDisputeModalOpen(false) }}
+                >
+                  <div
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                      background: 'var(--surface-1)',
+                      border: '1px solid var(--surface-border)',
+                      borderRadius: 14,
+                      padding: 22,
+                      width: '100%',
+                      maxWidth: 420,
+                    }}
+                  >
+                    <p className="font-serif text-lg mb-1.5" style={{ color: 'var(--text-primary)' }}>
+                      Flag this for review
+                    </p>
+                    <p className="font-sans text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+                      Your answer and the AI&apos;s grading go to the admin automatically. Adding a short note on why you think the grading was wrong is optional but helps — feel free to skip it.
+                    </p>
+                    <textarea
+                      value={disputeReason}
+                      onChange={e => setDisputeReason(e.target.value)}
+                      placeholder="Optional — e.g. \"I said the same thing as the model answer, just in different words\""
+                      rows={3}
+                      autoFocus
+                      style={{
+                        width: '100%',
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--surface-border)',
+                        borderRadius: 10,
+                        color: 'var(--text-primary)',
+                        fontFamily: 'var(--font-dm-sans)',
+                        fontSize: 13,
+                        padding: '10px 12px',
+                        resize: 'vertical',
+                        outline: 'none',
+                        marginBottom: 14,
+                      }}
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => submitDispute('')}
+                        disabled={disputeState === 'sending'}
+                        className="font-sans text-xs"
+                        style={{
+                          color: 'var(--text-muted)',
+                          background: 'transparent',
+                          border: '1px solid var(--surface-border)',
+                          borderRadius: 8,
+                          padding: '7px 14px',
+                          cursor: disputeState === 'sending' ? 'wait' : 'pointer',
+                        }}
+                      >
+                        Skip explanation
+                      </button>
+                      <button
+                        onClick={() => submitDispute(disputeReason)}
+                        disabled={disputeState === 'sending'}
+                        className="font-sans text-xs font-medium"
+                        style={{
+                          color: '#0A0A08',
+                          background: 'var(--amber)',
+                          border: 'none',
+                          borderRadius: 8,
+                          padding: '7px 16px',
+                          cursor: disputeState === 'sending' ? 'wait' : 'pointer',
+                        }}
+                      >
+                        {disputeState === 'sending' ? 'Sending…' : 'Send to admin'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
 
