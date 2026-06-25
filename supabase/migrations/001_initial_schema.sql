@@ -97,19 +97,24 @@ create table user_topic_coverage (
 );
 
 -- Seed topics
+-- FLK1's "Public" topic (slug legal-system) covers what used to be two separate topics —
+-- "Legal System and Constitutional Law" and "Legal Services" — merged into one and renamed
+-- "Public" to match the source notes' own chapter heading. Hard-coded as a single row here so a
+-- fresh database build never recreates the old split; HEADER_TO_SLUG in chunker.ts and
+-- chunk-extractor.ts maps every old heading variant (including "LEGAL SERVICES") onto this same
+-- legal-system slug too, for the same reason.
 insert into topics (name, paper, slug, sort_order) values
 ('Business Law and Practice',          'FLK1', 'business-law',        1),
 ('Dispute Resolution',                  'FLK1', 'dispute-resolution',  2),
 ('Contract',                            'FLK1', 'contract',            3),
 ('Tort',                                'FLK1', 'tort',                4),
-('Legal System and Constitutional Law', 'FLK1', 'legal-system',        5),
-('Legal Services',                      'FLK1', 'legal-services',      6),
-('Property Practice',                   'FLK2', 'property-practice',   7),
-('Land Law',                            'FLK2', 'land-law',            8),
-('Trusts',                              'FLK2', 'trusts',              9),
-('Wills and Administration of Estates', 'FLK2', 'wills',              10),
-('Solicitors Accounts',                 'FLK2', 'solicitors-accounts', 11),
-('Criminal Law and Practice',           'FLK2', 'criminal-law',        12);
+('Public',                              'FLK1', 'legal-system',        5),
+('Property Practice',                   'FLK2', 'property-practice',   6),
+('Land Law',                            'FLK2', 'land-law',            7),
+('Trusts',                              'FLK2', 'trusts',              8),
+('Wills and Administration of Estates', 'FLK2', 'wills',               9),
+('Solicitors Accounts',                 'FLK2', 'solicitors-accounts', 10),
+('Criminal Law and Practice',           'FLK2', 'criminal-law',        11);
 
 -- Row-level security
 alter table profiles enable row level security;

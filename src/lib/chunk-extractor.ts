@@ -64,10 +64,15 @@ export const HEADER_TO_SLUG: Record<string, string> = {
   'DISPUTE RESOLUTION':        'dispute-resolution',
   'CONTRACT':                  'contract',
   'TORT':                      'tort',
+  // FLK1 no longer has a separate "Legal Services" topic — it and "Legal System and
+  // Constitutional Law" were merged into one topic, renamed "Public" in the app. Every header
+  // variant for either of the old two topics maps to that same slug now, hard-coded here so a
+  // re-upload can never recreate "Legal Services" as its own topic again.
+  'PUBLIC':                    'legal-system',
   'PUBLIC LAW':                'legal-system',
   'LEGAL SYSTEM':              'legal-system',
   'LEGAL SYSTEM AND CONSTITUTIONAL LAW': 'legal-system',
-  'LEGAL SERVICES':            'legal-services',
+  'LEGAL SERVICES':            'legal-system',
   'PROPERTY PRACTICE':         'property-practice',
   'LAND LAW':                  'land-law',
   'TRUSTS':                    'trusts',

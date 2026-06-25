@@ -82,13 +82,18 @@ Users can optionally upload their own revision notes during onboarding (Step 3) 
 
 ### SQE1 Topic Taxonomy
 
-**FLK1 (6 topics)**
+**FLK1 (5 topics)**
 1. Business Law and Practice → Formation, Directors' Duties, Shareholders, Taxation, Insolvency, etc.
 2. Dispute Resolution → Starting a claim, Default judgment, Case management, Trial, Enforcement
 3. Contract → Formation, Terms, Termination, Privity, Discharge, Remedies
 4. Tort → Negligence, Employer's liability, Psychiatric harm, Land torts, Product liability
-5. Legal System and Constitutional Law → Sources of Law, Courts, Constitution, HRA, Judicial Review
-6. Legal Services
+5. Public → Sources of Law, Courts, Constitution, HRA, Judicial Review, Legal Services. Merged
+   from what used to be two separate topics ("Legal System and Constitutional Law" and "Legal
+   Services") — the slug stayed `legal-system` (renaming/merging a topic changes its display name
+   and content, never its slug or topic_id). `HEADER_TO_SLUG` in both `chunker.ts` and
+   `chunk-extractor.ts` maps every heading variant for either old topic (including "PUBLIC",
+   "LEGAL SERVICES") to this one slug, so a re-upload can never recreate "Legal Services" as its
+   own topic again.
 
 **FLK2 (6 topics)**
 7. Property Practice → Freehold/Leasehold transactions, Searches, Exchange, Completion

@@ -181,6 +181,7 @@ export default function ChunksPage() {
   // Delete is refused server-side unless the topic has zero chunks and zero questions.
   const [manageTopicId, setManageTopicId] = useState('')
   const [manageNewName, setManageNewName] = useState('')
+  const [manageMergeIntoId, setManageMergeIntoId] = useState('')
   const [manageState, setManageState] = useState<{ status: 'idle' | 'saving' | 'error'; message?: string }>({ status: 'idle' })
 
   useEffect(() => {
@@ -405,6 +406,30 @@ export default function ChunksPage() {
     }
     setManageState({ status: 'idle' })
     setTopics(prev => prev.map(t => t.id === manageTopicId ? { ...t, name: manageNewName.trim() } : t))
+  }
+
+  async function mergeTopicAction() {
+    if (!manageTopicId || !manageMergeIntoId) return
+    if (manageTopicId === manageMergeIntoId) return
+    const fromName = topics.find(t => t.id === manageTopicId)?.name ?? 'this topic'
+    const intoName = topics.find(t => t.id === manageMergeIntoId)?.name ?? 'the target topic'
+    if (!confirm(`Move every chunk and question from "${fromName}" into "${intoName}", then delete "${fromName}"? This cannot be undone.`)) return
+    setManageState({ status: 'saving' })
+    const res = await fetch('/api/admin/topics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_topic_id: manageTopicId, into_topic_id: manageMergeIntoId }),
+    })
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      setManageState({ status: 'error', message: json?.error ?? 'Merge failed' })
+      return
+    }
+    setTopics(prev => prev.filter(t => t.id !== manageTopicId))
+    setManageTopicId('')
+    setManageMergeIntoId('')
+    setManageState({ status: 'idle' })
+    load()
   }
 
   async function deleteTopicAction() {
@@ -995,6 +1020,40 @@ export default function ChunksPage() {
               }}
             >
               Delete (only if empty)
+            </button>
+          </div>
+          {/* Merge — for collapsing two topics into one (e.g. an old taxonomy split that should
+              have always been a single topic). Unlike Delete above, this works even if the topic
+              being removed still has chunks/questions: they all move to the target topic first. */}
+          <div className="flex flex-wrap items-center gap-3 mt-3 pt-3" style={{ borderTop: '1px solid var(--surface-border)' }}>
+            <span className="font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>
+              Merge selected topic into:
+            </span>
+            <select
+              value={manageMergeIntoId}
+              onChange={e => setManageMergeIntoId(e.target.value)}
+              disabled={!manageTopicId}
+              style={{
+                background: 'var(--surface-2)', border: '1px solid var(--surface-border)', color: 'var(--text-primary)',
+                borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font-dm-sans)', fontSize: 13, minWidth: 220,
+                opacity: !manageTopicId ? 0.6 : 1,
+              }}
+            >
+              <option value="">Select target topic…</option>
+              {topics.filter(t => t.id !== manageTopicId).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+            <button
+              onClick={mergeTopicAction}
+              disabled={!manageTopicId || !manageMergeIntoId || manageState.status === 'saving'}
+              title="Moves every chunk and question from the selected topic into the target, then deletes the now-empty selected topic"
+              style={{
+                background: 'transparent', color: 'var(--status-wrong)', fontFamily: 'var(--font-dm-sans)', fontWeight: 600, fontSize: 13,
+                padding: '6px 14px', borderRadius: 8, border: '1px solid var(--status-wrong)',
+                cursor: !manageTopicId || !manageMergeIntoId ? 'not-allowed' : 'pointer',
+                opacity: !manageTopicId || !manageMergeIntoId ? 0.6 : 1,
+              }}
+            >
+              Merge & delete
             </button>
           </div>
           {manageState.status === 'error' && (

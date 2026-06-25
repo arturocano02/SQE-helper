@@ -75,6 +75,52 @@ export async function PUT(request: Request) {
 }
 
 /**
+ * POST /api/admin/topics  body: { from_topic_id, into_topic_id }
+ * Merges one topic into another: every knowledge_chunk and question under from_topic_id is
+ * re-pointed to into_topic_id (subtopic_id cleared, same reasoning as a single chunk retag —
+ * the old topic's subtopic taxonomy doesn't apply under the new topic), then from_topic_id's
+ * now-empty subtopics/mastery/coverage rows and the topic itself are deleted. Use this instead
+ * of rename + DELETE when the topic being removed might still have real content (DELETE alone
+ * refuses to touch a topic with chunks/questions on it).
+ */
+export async function POST(request: Request) {
+  const user = await requireAdmin()
+  if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const body = await request.json().catch(() => ({}))
+  const { from_topic_id, into_topic_id } = body as { from_topic_id?: string; into_topic_id?: string }
+  if (!from_topic_id || !into_topic_id) {
+    return NextResponse.json({ error: 'from_topic_id and into_topic_id required' }, { status: 400 })
+  }
+  if (from_topic_id === into_topic_id) {
+    return NextResponse.json({ error: 'from_topic_id and into_topic_id must differ' }, { status: 400 })
+  }
+
+  const admin = createAdminClient()
+
+  const { error: chunkErr } = await admin
+    .from('knowledge_chunks')
+    .update({ topic_id: into_topic_id, subtopic_id: null })
+    .eq('topic_id', from_topic_id)
+  if (chunkErr) return NextResponse.json({ error: chunkErr.message }, { status: 500 })
+
+  const { error: questionErr } = await admin
+    .from('questions')
+    .update({ topic_id: into_topic_id })
+    .eq('topic_id', from_topic_id)
+  if (questionErr) return NextResponse.json({ error: questionErr.message }, { status: 500 })
+
+  await admin.from('subtopics').delete().eq('topic_id', from_topic_id)
+  await admin.from('user_topic_mastery').delete().eq('topic_id', from_topic_id)
+  await admin.from('user_topic_coverage').delete().eq('topic_id', from_topic_id)
+
+  const { error: deleteErr } = await admin.from('topics').delete().eq('id', from_topic_id)
+  if (deleteErr) return NextResponse.json({ error: deleteErr.message }, { status: 500 })
+
+  return NextResponse.json({ ok: true })
+}
+
+/**
  * DELETE /api/admin/topics?id=...
  * Refuses unless the topic has zero chunks and zero questions — this is for cleaning up a topic
  * that never had real content (e.g. nothing in the source notes maps to it), not for merging
