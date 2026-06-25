@@ -442,7 +442,7 @@ export default function RecallSessionPage() {
                     <textarea
                       value={disputeReason}
                       onChange={e => setDisputeReason(e.target.value)}
-                      placeholder="Optional — e.g. \"I said the same thing as the model answer, just in different words\""
+                      placeholder="Optional — e.g. “I said the same thing as the model answer, just in different words”"
                       rows={3}
                       autoFocus
                       style={{
