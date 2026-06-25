@@ -27,7 +27,7 @@
 
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { parseDocxToSections, flattenToLeaves, breadcrumbFor } from '@/lib/chunk-extractor'
+import { parseDocxToSections, flattenToLeaves, breadcrumbFor, detectTopicSlug } from '@/lib/chunk-extractor'
 
 export const maxDuration = 60
 
@@ -58,16 +58,25 @@ export async function POST(request: Request) {
   if (!fileData) return NextResponse.json({ error: 'Original .docx file not found in storage. Please re-upload.' }, { status: 404 })
   const docxBuffer = Buffer.from(await fileData.arrayBuffer())
 
-  const { sections, frontMatterPageEnd } = await parseDocxToSections(docxBuffer)
+  const { sections, frontMatterPageEnd, outlineTopicMap } = await parseDocxToSections(docxBuffer)
   const leaves = flattenToLeaves(sections, frontMatterPageEnd).filter(l => l.content.trim().length > 0)
 
-  type ChunkRow = { source_section: string; rule_text: string; context_text: string | null }
+  // Map topic_id -> slug once, so a chunk's actual stored topic can be compared against what a
+  // fresh re-parse of its own breadcrumb says it should be — this is the "recheck the tagging"
+  // pass: section/character coverage above only proves the text was captured, not that it ended
+  // up under the right topic. A whole chapter silently swallowed as a child of an earlier chapter
+  // (the FLK2 "everything tagged Property Practice" bug) passes every coverage check above, since
+  // the content IS all there — it's just all sitting under one topic_id instead of six.
+  const { data: topicRows } = await admin.from('topics').select('id, slug')
+  const topicIdToSlug = new Map((topicRows ?? []).map((t: { id: string; slug: string }) => [t.id, t.slug]))
+
+  type ChunkRow = { source_section: string; rule_text: string; context_text: string | null; topic_id: string }
   const chunksBySection = new Map<string, ChunkRow[]>()
   const PAGE_SIZE = 1000
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const { data, error } = await admin
       .from('knowledge_chunks')
-      .select('source_section, rule_text, context_text')
+      .select('source_section, rule_text, context_text, topic_id')
       .eq('source_material_id', source_material_id)
       .range(offset, offset + PAGE_SIZE - 1)
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -81,9 +90,11 @@ export async function POST(request: Request) {
 
   const missingSections: string[] = []
   const thinSections: Array<{ section: string; leaf_chars: number; chunk_chars: number }> = []
+  const topicMismatches: Array<{ section: string; expected_topic: string; actual_topics: string[] }> = []
   let charsTotal = 0
   let charsCaptured = 0
   const byChapter = new Map<string, { total: number; covered: number }>()
+  const rootsSeen = new Set<string>()
 
   for (const leaf of leaves) {
     const breadcrumb = breadcrumbFor(leaf)
@@ -91,6 +102,7 @@ export async function POST(request: Request) {
     charsTotal += leafChars
 
     const chapter = leaf.path[0] ?? '(unknown)'
+    rootsSeen.add(chapter)
     const chapterStats = byChapter.get(chapter) ?? { total: 0, covered: 0 }
     chapterStats.total++
 
@@ -99,6 +111,19 @@ export async function POST(request: Request) {
       missingSections.push(breadcrumb)
     } else {
       chapterStats.covered++
+
+      // Recheck tagging: what topic does this leaf's own breadcrumb say it belongs to, versus
+      // what topic its chunks actually got saved under. A mismatch here is exactly the FLK2 bug
+      // pattern — the section's content was captured fine, just filed under the wrong topic
+      // because an ancestor heading never closed during parsing.
+      const expectedSlug = detectTopicSlug(leaf.path, outlineTopicMap)
+      if (expectedSlug) {
+        const actualSlugs = Array.from(new Set(chunks.map(c => topicIdToSlug.get(c.topic_id) ?? '(unknown)')))
+        if (!actualSlugs.includes(expectedSlug)) {
+          topicMismatches.push({ section: breadcrumb, expected_topic: expectedSlug, actual_topics: actualSlugs })
+        }
+      }
+
       const chunkChars = chunks.reduce((sum, c) => sum + c.rule_text.length + (c.context_text?.length ?? 0), 0)
       charsCaptured += chunkChars
       // rule_text is the VERBATIM source unit (splitContentIntoUnits just splits on blank
@@ -121,7 +146,8 @@ export async function POST(request: Request) {
 
   console.log(
     `[verify ${material.file_name}] ${sectionsCovered}/${sectionsTotal} sections covered, ` +
-    `${charCoveragePct}% of characters captured in chunks, ${thinSections.length} thin sections flagged` +
+    `${charCoveragePct}% of characters captured in chunks, ${thinSections.length} thin sections flagged, ` +
+    `${rootsSeen.size} top-level chapter(s) detected, ${topicMismatches.length} topic mismatches` +
     (sectionsMissing > 0 ? ` — MISSING: ${missingSections.slice(0, 10).join(' | ')}${sectionsMissing > 10 ? ` (+${sectionsMissing - 10} more)` : ''}` : '')
   )
 
@@ -139,5 +165,11 @@ export async function POST(request: Request) {
       sections_total: stats.total,
       sections_covered: stats.covered,
     })),
+    // Sanity signal: if this document's Contents page lists six chapters but only one root shows
+    // up here, that's the exact structural bug (a later chapter heading nested as a CHILD of an
+    // earlier one instead of becoming its own root) that silently tags everything under one topic.
+    top_level_chapters_detected: Array.from(rootsSeen),
+    topic_mismatches: topicMismatches.slice(0, 200),
+    topic_mismatch_count: topicMismatches.length,
   })
 }

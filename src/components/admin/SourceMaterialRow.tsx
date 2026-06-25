@@ -237,14 +237,24 @@ export default function SourceMaterialRow({ material: m }: SourceMaterialRowProp
               </Link>
             )}
             {m.chunks_extracted > 0 && (
-              <a
-                href={`/api/admin/chunks/export?source_material_id=${m.id}`}
-                className="text-xs transition hover:underline"
-                style={{ color: 'var(--text-muted)' }}
-                title="Download every chunk extracted so far, ordered to mirror the document, for checking against the original file"
-              >
-                Download ↓
-              </a>
+              <>
+                <a
+                  href={`/api/admin/chunks/export?source_material_id=${m.id}`}
+                  className="text-xs transition hover:underline"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Download every chunk extracted so far, ordered to mirror the document, for checking against the original file"
+                >
+                  Download ↓
+                </a>
+                <a
+                  href={`/api/admin/chunks/export?source_material_id=${m.id}&format=csv`}
+                  className="text-xs transition hover:underline"
+                  style={{ color: 'var(--text-muted)' }}
+                  title="Same chunks as a spreadsheet (Topic/Subtopic/Page/Rule columns) — open in Excel, or upload it plus the original document in a chat for a side-by-side gap check"
+                >
+                  Excel ↓
+                </a>
+              </>
             )}
             {m.chunk_status === 'extracted' && m.file_type === 'docx' && backfill.status !== 'running' && !resetting && (
               <button

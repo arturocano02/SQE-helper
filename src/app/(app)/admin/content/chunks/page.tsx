@@ -32,6 +32,9 @@ interface VerifyResult {
   chars_captured: number
   char_coverage_pct: number
   by_chapter: Array<{ chapter: string; sections_total: number; sections_covered: number }>
+  top_level_chapters_detected: string[]
+  topic_mismatches: Array<{ section: string; expected_topic: string; actual_topics: string[] }>
+  topic_mismatch_count: number
 }
 
 interface PreviewResult {
@@ -787,7 +790,47 @@ export default function ChunksPage() {
                 {verifyState.verify.thin_sections.length > 0 && (
                   <Pill label={`⚠ ${verifyState.verify.thin_sections.length} thin sections`} color="amber" />
                 )}
+                <Pill
+                  label={`${verifyState.verify.top_level_chapters_detected.length} top-level chapter(s) detected`}
+                  color={verifyState.verify.top_level_chapters_detected.length <= 1 ? 'red' : 'green'}
+                />
+                {verifyState.verify.topic_mismatch_count > 0 && (
+                  <Pill label={`⚠ ${verifyState.verify.topic_mismatch_count} topic mismatches`} color="red" />
+                )}
               </div>
+
+              {/* If a document's real Contents page lists several chapters but only one (or very
+                  few) show up here, a later chapter heading got nested as a child of an earlier
+                  one during parsing instead of becoming its own root — every chunk under it then
+                  inherits the wrong topic. This is the exact "all of FLK2 tagged Property Practice"
+                  bug pattern, and it passes section/character coverage above since the content was
+                  captured fine, just filed under one topic instead of several. */}
+              <div className="font-sans text-xs" style={{ color: 'var(--text-muted)' }}>
+                Detected chapters: {verifyState.verify.top_level_chapters_detected.join(', ') || '(none)'}
+              </div>
+
+              {verifyState.verify.topic_mismatches.length > 0 && (
+                <div className="font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>
+                  <div className="mb-1.5">
+                    Sections whose breadcrumb implies a different topic than the one their chunks are saved under:
+                  </div>
+                  <ul className="ml-4 list-disc font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    {verifyState.verify.topic_mismatches.slice(0, 15).map(m => (
+                      <li key={m.section}>
+                        {m.section} — expected <strong>{m.expected_topic}</strong>, found under {m.actual_topics.join(', ')}
+                      </li>
+                    ))}
+                  </ul>
+                  {verifyState.verify.topic_mismatch_count > 15 && (
+                    <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      +{verifyState.verify.topic_mismatch_count - 15} more
+                    </div>
+                  )}
+                  <div className="font-sans text-xs mt-1.5" style={{ color: 'var(--text-muted)' }}>
+                    Fix the parser issue and re-extract for a clean re-tag, or use &quot;Find chunks that may belong to a topic&quot; below to bulk-move the existing ones.
+                  </div>
+                </div>
+              )}
 
               {verifyState.verify.sections_missing > 0 && (
                 <div className="font-sans text-sm" style={{ color: 'var(--status-wrong)' }}>

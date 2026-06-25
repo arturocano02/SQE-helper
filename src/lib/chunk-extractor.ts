@@ -58,7 +58,7 @@ export interface ExtractedChunk {
 }
 
 // Mirrors the mapping in chunker.ts — kept in sync manually
-const HEADER_TO_SLUG: Record<string, string> = {
+export const HEADER_TO_SLUG: Record<string, string> = {
   'BUSINESS LAW AND PRACTICE': 'business-law',
   'BUSINESS LAW':              'business-law',
   'DISPUTE RESOLUTION':        'dispute-resolution',
@@ -81,7 +81,7 @@ const HEADER_TO_SLUG: Record<string, string> = {
   'CRIMINAL LITIGATION':       'criminal-law',
 }
 
-function detectTopicSlug(path: string[], outlineTopicMap?: Map<string, string>): string | null {
+export function detectTopicSlug(path: string[], outlineTopicMap?: Map<string, string>): string | null {
   for (const part of path) {
     const upper = part.toUpperCase().trim()
     if (HEADER_TO_SLUG[upper]) return HEADER_TO_SLUG[upper]
@@ -853,6 +853,17 @@ function buildHeadingStyleModel(paragraphs: DocxParagraph[]): HeadingStyleModel 
 // right after it on the Contents page itself, before the next real heading appears.
 const TOC_FORCED_LEVEL = 99
 
+/** True if `text` is, after stripping a dot-leader-stripped page number stuck on the end (the
+ *  same "Title123" → {title, page} shape splitTitlePage already handles for TOC lines), an exact
+ *  match for one of the 12 known SQE1 chapter headings in HEADER_TO_SLUG. Used to force chapter
+ *  boundaries to level 1 regardless of how the visual model ranks their style — see the comment
+ *  at the call site in classifyHeadingParagraph. */
+function forcedChapterLevel(text: string): number | null {
+  const { title } = splitTitlePage(text)
+  const upper = title.toUpperCase().trim()
+  return upper in HEADER_TO_SLUG ? 1 : null
+}
+
 function classifyHeadingParagraph(p: DocxParagraph, model: HeadingStyleModel): HeadingClassification | null {
   const text = p.runs.map(r => r.text).join('').trim()
   if (!text) return null
@@ -875,6 +886,22 @@ function classifyHeadingParagraph(p: DocxParagraph, model: HeadingStyleModel): H
   const tocLevel = tocStyleLevel(p.pStyle, text)
   if (tocLevel !== null) {
     return { level: tocLevel, kind: 'definition', text }
+  }
+
+  // One of the 12 real SQE1 chapter names, exactly — a closed, known set, so whenever a
+  // paragraph's text matches one exactly it's always a true chapter boundary, regardless of how
+  // the visual-clustering model below ranks its style. Without this, a document compiled from
+  // differently-styled source chapters (seen in a real FLK2 master-notes file, where later
+  // chapters' heading style scored lower than "PROPERTY PRACTICE"'s) gets every chapter after
+  // the first visually-distinct one silently nested AS A CHILD of whichever chapter the model
+  // happened to rank level 1 — which then makes every chunk for the rest of the document inherit
+  // that one wrong topic, since detectTopicSlug() returns on the first matching path segment
+  // (path[0]), and path[0] is now always the wrongly-never-closed first chapter. Forcing these
+  // exact strings to level 1 regardless of visual styling means a same-or-lower-styled later
+  // chapter still correctly pops the previous chapter off the stack and opens as its own root.
+  const chapterLevel = forcedChapterLevel(text)
+  if (chapterLevel !== null) {
+    return { level: chapterLevel, kind: kindForLevel(chapterLevel), text }
   }
 
   const explicitLevel = pStyleLevel(p.pStyle)
