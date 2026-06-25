@@ -171,7 +171,34 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
     const completedIds = new Set<string>()
     let reachedTerminalStage = false
 
+    // Watchdog: a single hung Claude call (network stall, etc.) can leave the connection open
+    // with no further bytes ever arriving — the client would then wait on reader.read() forever,
+    // which is exactly the "frozen progress log, no buttons, no way out" state reported. Treat
+    // 90s with no new SSE event as dead and abort, rather than trusting the platform to always
+    // tear the connection down on its own.
+    const controller = new AbortController()
+    let watchdog: ReturnType<typeof setTimeout> | null = null
+    function armWatchdog() {
+      if (watchdog) clearTimeout(watchdog)
+      watchdog = setTimeout(() => controller.abort(), 90_000)
+    }
+
+    // Shared by both a clean-but-incomplete stream end AND a watchdog abort — either way the
+    // admin needs the same thing: know what finished, what didn't, and a way to continue.
+    function reportIncomplete(reason: string) {
+      const remaining = idsToSend.filter(id => !completedIds.has(id))
+      setLog(prev => [...prev, {
+        stage: 'error',
+        message: remaining.length > 0
+          ? `${reason} — ${completedIds.size} topic${completedIds.size !== 1 ? 's' : ''} finished, ${remaining.length} remaining. Use "Resume remaining topics" below rather than Generate, so the finished ones aren't redone.`
+          : `${reason} — all selected topics had at least started by then; check the questions list to see what actually got saved before retrying.`,
+      }])
+      if (remaining.length > 0) setRemainingTopicIds(remaining)
+      setDone(true)
+    }
+
     try {
+      armWatchdog()
       const res = await fetch('/api/admin/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -183,6 +210,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
           content_type: contentType,
           include_sample_questions: contentType === 'mcq' ? includeSampleQuestions : false,
         }),
+        signal: controller.signal,
       })
 
       const reader = res.body?.getReader()
@@ -194,6 +222,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
       while (true) {
         const { done: streamDone, value } = await reader.read()
         if (streamDone) break
+        armWatchdog()
 
         buffer += decoder.decode(value, { stream: true })
         const parts = buffer.split('\n\n')
@@ -221,20 +250,17 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
       // clean finish. Whatever topics already got a 'topic_done'/'topic_skip' event are safely
       // recorded in the DB; surface the rest as resumable instead of leaving the admin to guess.
       if (!reachedTerminalStage) {
-        const remaining = idsToSend.filter(id => !completedIds.has(id))
-        if (remaining.length > 0) {
-          setLog(prev => [...prev, {
-            stage: 'error',
-            message: `Stopped partway through (likely a timeout on a large run) — ${completedIds.size} topic${completedIds.size !== 1 ? 's' : ''} finished, ${remaining.length} remaining. Use "Resume remaining topics" below rather than Generate, so the finished ones aren't redone.`,
-          }])
-          setRemainingTopicIds(remaining)
-        }
-        setDone(true)
+        reportIncomplete('Stopped partway through (likely a timeout on a large run)')
       }
     } catch (err) {
-      setLog(prev => [...prev, { stage: 'error', message: err instanceof Error ? err.message : 'Unknown error' }])
-      setDone(true)
+      if (controller.signal.aborted) {
+        reportIncomplete('No response for 90s — treating the connection as dead')
+      } else {
+        setLog(prev => [...prev, { stage: 'error', message: err instanceof Error ? err.message : 'Unknown error' }])
+        setDone(true)
+      }
     } finally {
+      if (watchdog) clearTimeout(watchdog)
       setRunning(false)
     }
   }
@@ -690,7 +716,7 @@ export default function GenerateContentPanel({ contentType }: GenerateContentPan
                 <div ref={logEndRef} />
               </div>
 
-              {done && (generatedSoFar > 0 || remainingTopicIds) && (
+              {done && (
                 <div className="mt-4 flex gap-3">
                   {remainingTopicIds && (
                     <button
