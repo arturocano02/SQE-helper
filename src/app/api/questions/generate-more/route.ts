@@ -82,13 +82,14 @@ function shuffleCorrectAnswer(q: GeneratedQuestion): GeneratedQuestion {
   const correctIndex = q.options.findIndex(o => o.label === q.correct_answer)
   if (correctIndex === -1) return q
 
+  const options = q.options
   const labels = ['A', 'B', 'C', 'D', 'E']
   const order = [0, 1, 2, 3, 4]
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
     ;[order[i], order[j]] = [order[j], order[i]]
   }
-  const newOptions = labels.map((label, i) => ({ label, text: q.options[order[i]].text }))
+  const newOptions = labels.map((label, i) => ({ label, text: options[order[i]].text }))
   const newCorrectLabel = labels[order.indexOf(correctIndex)]
 
   return { ...q, options: newOptions, correct_answer: newCorrectLabel }
