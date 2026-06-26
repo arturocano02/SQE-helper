@@ -107,6 +107,9 @@ export default function AdminUploadPage() {
   // up front means the admin sees "this won't work yet" before they upload anything,
   // not just after the extraction API call fails.
   const [topicChunkCount, setTopicChunkCount] = useState<number | null>(null)
+  // Files currently being deleted — disables their Delete button so a double-click can't fire
+  // the request twice while the first one is still in flight.
+  const [deletingFiles, setDeletingFiles] = useState<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   // Guards against overlapping extraction loops for the same file. Without this, clicking
   // Resume while an earlier loop is still alive (e.g. it's mid-backoff-sleep after a transient
@@ -679,6 +682,50 @@ export default function AdminUploadPage() {
     }
   }
 
+  /**
+   * Deletes ONE uploaded file entirely — the storage file, its source_materials row, every
+   * chunk/question that came from it, and the per-user history/SRS rows tied to those
+   * questions — then drops it from local state so the upload list shows the slot is free for
+   * a fresh upload. This is the fix for a stuck/wrong/duplicate upload (e.g. a file that's
+   * deadlocked on "already running in another tab/loop"): delete it here, then drop the
+   * correct file in.
+   */
+  async function deleteUpload(fileName: string, sourceMaterialId: string | null) {
+    if (!sourceMaterialId) {
+      // No DB row yet (still uploading, or upload failed before a row was created) — just
+      // clear it from local state, nothing to delete server-side.
+      setUploadedFiles(prev => prev.filter(f => f.file.name !== fileName))
+      return
+    }
+    if (!window.confirm(`Delete "${fileName}" — its knowledge chunks, and any questions generated from it? This can't be undone.`)) {
+      return
+    }
+    setDeletingFiles(prev => new Set(prev).add(fileName))
+    // Stop a live extraction loop for this file from continuing to hit the now-deleted row.
+    pauseRequested.current.add(fileName)
+    try {
+      const res = await fetch('/api/admin/upload/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_material_id: sourceMaterialId }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        alert(json?.error ?? 'Delete failed')
+        return
+      }
+      setUploadedFiles(prev => prev.filter(f => f.file.name !== fileName))
+      setChunkExtraction(prev => { const next = { ...prev }; delete next[fileName]; return next })
+      setOutlinePhase(prev => { const next = { ...prev }; delete next[fileName]; return next })
+      setPreview(prev => { const next = { ...prev }; delete next[fileName]; return next })
+      setArchivedFiles(prev => { const next = new Set(prev); next.delete(fileName); return next })
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Delete failed')
+    } finally {
+      setDeletingFiles(prev => { const next = new Set(prev); next.delete(fileName); return next })
+    }
+  }
+
   const activeUploadedFiles = uploadedFiles.filter(f => !archivedFiles.has(f.file.name))
   const archivedUploadedFiles = uploadedFiles.filter(f => archivedFiles.has(f.file.name))
   const readyToExtract = activeUploadedFiles.filter(f => f.status === 'done' && f.source_material_id)
@@ -902,6 +949,19 @@ export default function AdminUploadPage() {
                         Done — move to history
                       </button>
                     )}
+                    <button
+                      onClick={() => deleteUpload(entry.file.name, entry.source_material_id)}
+                      disabled={deletingFiles.has(entry.file.name)}
+                      title="Delete this upload, its chunks, and any questions generated from it — frees this slot for a fresh upload"
+                      style={{
+                        background: 'transparent', border: '1px solid rgba(248,113,113,0.3)', color: 'var(--status-wrong)',
+                        fontFamily: 'var(--font-dm-sans)', fontSize: 11, padding: '4px 10px', borderRadius: 6,
+                        cursor: deletingFiles.has(entry.file.name) ? 'not-allowed' : 'pointer',
+                        opacity: deletingFiles.has(entry.file.name) ? 0.5 : 1,
+                      }}
+                    >
+                      {deletingFiles.has(entry.file.name) ? 'Deleting…' : 'Delete'}
+                    </button>
                   </div>
                 </div>
                 )
@@ -1503,6 +1563,19 @@ export default function AdminUploadPage() {
                     }}
                   >
                     Bring back
+                  </button>
+                  <button
+                    onClick={() => deleteUpload(entry.file.name, entry.source_material_id)}
+                    disabled={deletingFiles.has(entry.file.name)}
+                    title="Delete this upload, its chunks, and any questions generated from it"
+                    style={{
+                      background: 'transparent', border: '1px solid rgba(248,113,113,0.3)', color: 'var(--status-wrong)',
+                      fontFamily: 'var(--font-dm-sans)', fontSize: 11, padding: '4px 10px', borderRadius: 6,
+                      cursor: deletingFiles.has(entry.file.name) ? 'not-allowed' : 'pointer',
+                      opacity: deletingFiles.has(entry.file.name) ? 0.5 : 1,
+                    }}
+                  >
+                    {deletingFiles.has(entry.file.name) ? 'Deleting…' : 'Delete'}
                   </button>
                 </div>
               ))}
