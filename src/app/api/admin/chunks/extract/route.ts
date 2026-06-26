@@ -14,8 +14,8 @@
 
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { extractChunksFromDocx, matchQuestionsToChunks } from '@/lib/chunk-extractor'
-import type { ExtractionProgress, ChunkCandidate, ChunkMatch } from '@/lib/chunk-extractor'
+import { extractChunksFromDocx, matchQuestionsToChunks, matchQuestionsToChunksAutoTopic } from '@/lib/chunk-extractor'
+import type { ExtractionProgress, ChunkCandidate, ChunkMatch, PaperTopicOption } from '@/lib/chunk-extractor'
 
 // Each request only processes one small batch of sections/question-batches, so it always
 // finishes well within Vercel's function timeout. The client calls this endpoint repeatedly
@@ -36,6 +36,10 @@ export const maxDuration = 280
 // advances more often) mean less progress lost per retry.
 const NOTES_BATCH_SIZE = 4
 const QUESTIONS_BATCH_SIZE = 3
+// Auto-detect path units are individual questions (not 10-question groups like the fixed-topic
+// path above), since each one needs its own topic classified before any matching happens — so
+// this is sized in raw questions-per-request, not "batch units".
+const AUTO_TOPIC_QUESTIONS_BATCH_SIZE = 12
 
 // If a record has been stuck on "extracting" for longer than this, we assume the previous
 // request was force-killed (e.g. Vercel timeout) rather than still genuinely running, and we
@@ -51,11 +55,15 @@ export async function POST(request: Request) {
   if (!profile?.is_admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const { source_material_id, topic_id, topic_name, extraction_mode } = body as {
+  const { source_material_id, topic_id, topic_name, extraction_mode, paper } = body as {
     source_material_id: string
     topic_id?: string           // optional — auto-detected per chunk if omitted
     topic_name?: string
     extraction_mode?: 'notes' | 'questions'  // 'notes' = revision notes, 'questions' = sample MCQ paper
+    // Questions mode only, used INSTEAD of topic_id — when the admin doesn't know/want to pick
+    // one topic for the whole sample-questions file, this scopes auto-detection to one paper's
+    // topics rather than requiring a single fixed topic for every question in the file.
+    paper?: 'FLK1' | 'FLK2'
   }
 
   if (!source_material_id) {
@@ -144,27 +152,61 @@ export async function POST(request: Request) {
   }
 
   // Questions mode never creates chunks — it only matches sample MCQs against chunks that
-  // already exist from notes. That requires a specific topic (to scope the candidate list)
-  // and at least one chunk already in the knowledge graph for it.
+  // already exist from notes. Either a specific topic_id was given (legacy/manual override —
+  // every question in the file is matched against just that one topic's chunks), or just a
+  // paper (FLK1/FLK2) was given, in which case each question's topic is auto-detected and
+  // matched against THAT topic's chunks individually — see matchQuestionsToChunksAutoTopic.
   let candidates: ChunkCandidate[] = []
+  let paperTopicOptions: PaperTopicOption[] = []
+  let candidatesByTopicId: Map<string, ChunkCandidate[]> = new Map()
+  const autoDetectTopic = useQuestionsMode && !topic_id
+
   if (useQuestionsMode) {
-    if (!topic_id) {
+    if (!topic_id && !paper) {
       return NextResponse.json(
-        { error: 'Select a topic before uploading sample questions — needed to match against that topic\'s existing knowledge chunks.' },
+        { error: 'Select which paper this is (FLK1 or FLK2) before uploading sample questions — needed to auto-match each question to its topic.' },
         { status: 400 }
       )
     }
-    const { data: existingChunks } = await admin
-      .from('knowledge_chunks')
-      .select('id, rule_text, source_section')
-      .eq('topic_id', topic_id)
-    candidates = (existingChunks ?? []) as ChunkCandidate[]
 
-    if (candidates.length === 0) {
-      return NextResponse.json(
-        { error: 'No knowledge chunks exist for this topic yet. Upload and extract revision notes for this topic first — sample questions only match against chunks that already exist, they never create new ones.' },
-        { status: 400 }
-      )
+    if (topic_id) {
+      const { data: existingChunks } = await admin
+        .from('knowledge_chunks')
+        .select('id, rule_text, source_section')
+        .eq('topic_id', topic_id)
+      candidates = (existingChunks ?? []) as ChunkCandidate[]
+
+      if (candidates.length === 0) {
+        return NextResponse.json(
+          { error: 'No knowledge chunks exist for this topic yet. Upload and extract revision notes for this topic first — sample questions only match against chunks that already exist, they never create new ones.' },
+          { status: 400 }
+        )
+      }
+    } else {
+      const { data: topicsInPaper } = await admin.from('topics').select('id, slug, name').eq('paper', paper)
+      paperTopicOptions = (topicsInPaper ?? []) as PaperTopicOption[]
+
+      if (paperTopicOptions.length === 0) {
+        return NextResponse.json({ error: `No topics found for ${paper}.` }, { status: 400 })
+      }
+
+      const { data: existingChunks } = await admin
+        .from('knowledge_chunks')
+        .select('id, rule_text, source_section, topic_id')
+        .in('topic_id', paperTopicOptions.map(t => t.id))
+
+      for (const t of paperTopicOptions) candidatesByTopicId.set(t.id, [])
+      for (const c of (existingChunks ?? []) as Array<{ id: string; rule_text: string; source_section: string; topic_id: string }>) {
+        candidatesByTopicId.get(c.topic_id)?.push({ id: c.id, rule_text: c.rule_text, source_section: c.source_section })
+      }
+
+      const totalCandidates = [...candidatesByTopicId.values()].reduce((sum, arr) => sum + arr.length, 0)
+      if (totalCandidates === 0) {
+        return NextResponse.json(
+          { error: `No knowledge chunks exist yet for any ${paper} topic. Upload and extract revision notes first — sample questions only match against chunks that already exist, they never create new ones.` },
+          { status: 400 }
+        )
+      }
     }
   }
 
@@ -309,7 +351,9 @@ export async function POST(request: Request) {
 
           if (m.prompt && m.options && m.correct_answer) {
             rows.push({
-              topic_id: topic_id ?? null,
+              // Auto-detect path: each question carries its own classified topic. Fixed-topic
+              // path (legacy/manual override): every question shares the one topic_id given.
+              topic_id: autoDetectTopic ? (m.resolved_topic_id ?? null) : (topic_id ?? null),
               knowledge_chunk_id: m.chunk_ids[0] ?? null,
               additional_chunk_ids: m.chunk_ids.slice(1),
               type: 'mcq',
@@ -355,13 +399,17 @@ export async function POST(request: Request) {
         }).eq('id', source_material_id)
       }
 
-      const batchSize = useQuestionsMode ? QUESTIONS_BATCH_SIZE : NOTES_BATCH_SIZE
+      const batchSize = autoDetectTopic
+        ? AUTO_TOPIC_QUESTIONS_BATCH_SIZE
+        : (useQuestionsMode ? QUESTIONS_BATCH_SIZE : NOTES_BATCH_SIZE)
       const range = { offset: resumeOffset, limit: batchSize }
       const resultNoun = useQuestionsMode ? 'questions matched' : 'knowledge chunks saved'
 
       try {
         const result = useQuestionsMode
-          ? await matchQuestionsToChunks(material.raw_text!, topic_name ?? 'SQE1', candidates, send, onMatches, range, onUnitDone)
+          ? (autoDetectTopic
+              ? await matchQuestionsToChunksAutoTopic(material.raw_text!, paperTopicOptions, candidatesByTopicId, send, onMatches, range, onUnitDone)
+              : await matchQuestionsToChunks(material.raw_text!, topic_name ?? 'SQE1', candidates, send, onMatches, range, onUnitDone))
           : await extractChunksFromDocx(docxBuffer!, topic_name ?? 'SQE1', send, onChunks, range, onUnitDone)
 
         if (!result.done) {

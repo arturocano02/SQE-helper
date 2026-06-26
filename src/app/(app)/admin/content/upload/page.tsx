@@ -255,19 +255,25 @@ export default function AdminUploadPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Sample questions no longer need one topic picked for the whole file — the admin only picks
+  // the paper (FLK1/FLK2) and each question's topic is auto-detected. So the up-front "will this
+  // even work" check has to look across every topic in that paper, not one chunkTopicId.
   useEffect(() => {
-    if (fileType !== 'questions' || !chunkTopicId) {
+    if (fileType !== 'questions' || paperFilter === 'all' || topics.length === 0) {
       setTopicChunkCount(null)
       return
     }
     let cancelled = false
     setTopicChunkCount(null)
-    fetch(`/api/admin/chunks?topic_id=${chunkTopicId}&limit=1`)
-      .then(res => res.json())
-      .then(json => { if (!cancelled) setTopicChunkCount(typeof json.total === 'number' ? json.total : null) })
-      .catch(() => { if (!cancelled) setTopicChunkCount(null) })
+    const topicIds = topics.filter(t => t.paper === paperFilter).map(t => t.id)
+    if (topicIds.length === 0) { setTopicChunkCount(0); return }
+    createClient()
+      .from('knowledge_chunks')
+      .select('id', { count: 'exact', head: true })
+      .in('topic_id', topicIds)
+      .then(({ count }) => { if (!cancelled) setTopicChunkCount(count ?? 0) })
     return () => { cancelled = true }
-  }, [fileType, chunkTopicId])
+  }, [fileType, paperFilter, topics])
 
   function addFiles(incoming: FileList | null) {
     if (!incoming) return
@@ -386,7 +392,12 @@ export default function AdminUploadPage() {
         body: JSON.stringify({
           source_material_id: sourceMaterialId,
           extraction_mode: fileType,
-          ...(topic ? { topic_id: topic.id, topic_name: topic.name } : {}),
+          // Sample questions: no topic select anymore — just the paper, so the server
+          // auto-detects each question's topic and matches it against that topic's chunks.
+          // Notes mode keeps the optional manual override (blank = auto-detect from headers).
+          ...(fileType === 'questions'
+            ? (paperFilter !== 'all' ? { paper: paperFilter } : {})
+            : (topic ? { topic_id: topic.id, topic_name: topic.name } : {})),
         }),
       })
     } catch (err) {
@@ -727,7 +738,7 @@ export default function AdminUploadPage() {
             onClick={() => setFileType('questions')}
             icon={<BookIcon size={20} />}
             title="Sample Questions"
-            desc="Official SRA sample question papers (.pdf). Notes must already be uploaded for the topic — Claude matches each MCQ to an existing knowledge chunk and extracts style/difficulty signal only. It never creates new chunks."
+            desc="Official SRA sample question papers (.pdf). Pick FLK1 or FLK2 only — Claude auto-detects each question's topic and matches it to an existing knowledge chunk from notes, extracting style/difficulty signal only. It never creates new chunks."
             badge="requires notes first"
             badgeColor="secondary"
           />
@@ -913,14 +924,20 @@ export default function AdminUploadPage() {
                 <p className="font-sans text-xs mb-4" style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                   {fileType === 'notes'
                     ? 'Claude reads each section of your notes and extracts every distinct legal rule as an atomic chunk. These become the verified source of truth for generating questions.'
-                    : 'Claude matches each MCQ to a chunk that already exists for the selected topic (extracted from notes), then records the verbatim answer, the trap it sets, and how hard it really is. No new chunks are created here — only existing ones are enriched with style/difficulty signal.'
+                    : 'Claude classifies each question\'s topic on its own, matches it to a chunk that already exists for that topic (extracted from notes), then records the verbatim answer, the trap it sets, and how hard it really is. No new chunks are created here — only existing ones are enriched with style/difficulty signal.'
                   }
                 </p>
 
                 <label className="block mb-3">
                   <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
                     Which paper is this?{' '}
-                    <span style={{ color: 'var(--text-muted)' }}>— narrows the topic list below to the right 6 topics</span>
+                    {fileType === 'questions' ? (
+                      <span style={{ color: 'var(--status-warning)' }}>
+                        — required, no topic to pick: each question's topic is auto-detected and matched to its own chunk
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)' }}>— narrows the topic list below to the right 6 topics</span>
+                    )}
                   </span>
                   <div className="flex gap-2">
                     {([
@@ -957,45 +974,43 @@ export default function AdminUploadPage() {
                   </div>
                 </label>
 
-                <label className="block mb-5">
-                  <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
-                    {fileType === 'notes' ? (
-                      <>Topic override{' '}<span style={{ color: 'var(--text-muted)' }}>— leave blank to auto-detect from section headers</span></>
-                    ) : (
-                      <>Topic <span style={{ color: 'var(--status-warning)' }}>— required</span>{' '}<span style={{ color: 'var(--text-muted)' }}>— must already have approved knowledge chunks from notes</span></>
-                    )}
-                  </span>
-                  <select
-                    value={chunkTopicId}
-                    onChange={e => setChunkTopicId(e.target.value)}
-                    style={{
-                      background: 'var(--surface-2)',
-                      border: '1px solid var(--surface-border)',
-                      borderRadius: 8,
-                      color: chunkTopicId ? 'var(--text-primary)' : 'var(--text-muted)',
-                      fontFamily: 'var(--font-dm-sans)',
-                      fontSize: 13,
-                      padding: '8px 12px',
-                      width: '100%',
-                    }}
-                  >
-                    <option value="">{fileType === 'notes' ? 'Auto-detect (recommended)' : 'Select a topic…'}</option>
-                    {topics
-                      .filter(t => paperFilter === 'all' || t.paper === paperFilter)
-                      .map(t => <option key={t.id} value={t.id}>{t.name} ({t.paper})</option>)}
-                  </select>
-                </label>
+                {fileType === 'notes' && (
+                  <label className="block mb-5">
+                    <span className="font-sans text-xs mb-1.5 block" style={{ color: 'var(--text-secondary)' }}>
+                      Topic override{' '}<span style={{ color: 'var(--text-muted)' }}>— leave blank to auto-detect from section headers</span>
+                    </span>
+                    <select
+                      value={chunkTopicId}
+                      onChange={e => setChunkTopicId(e.target.value)}
+                      style={{
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--surface-border)',
+                        borderRadius: 8,
+                        color: chunkTopicId ? 'var(--text-primary)' : 'var(--text-muted)',
+                        fontFamily: 'var(--font-dm-sans)',
+                        fontSize: 13,
+                        padding: '8px 12px',
+                        width: '100%',
+                      }}
+                    >
+                      <option value="">Auto-detect (recommended)</option>
+                      {topics
+                        .filter(t => paperFilter === 'all' || t.paper === paperFilter)
+                        .map(t => <option key={t.id} value={t.id}>{t.name} ({t.paper})</option>)}
+                    </select>
+                  </label>
+                )}
 
-                {fileType === 'questions' && chunkTopicId && topicChunkCount === 0 && (
+                {fileType === 'questions' && paperFilter !== 'all' && topicChunkCount === 0 && (
                   <div
                     className="flex items-start gap-2.5 mb-5 px-4 py-3 rounded-lg"
                     style={{ background: 'rgba(224,90,90,0.08)', border: '1px solid rgba(224,90,90,0.3)' }}
                   >
                     <span style={{ color: '#E87878', fontSize: 14, lineHeight: '1.4' }}>⚠</span>
                     <p className="font-sans text-xs" style={{ color: '#E87878', lineHeight: 1.6 }}>
-                      This topic has no knowledge chunks yet — extraction will not work. Upload and extract revision
-                      notes for this topic first; sample questions only match against chunks that already exist, they
-                      never create new ones.
+                      No knowledge chunks exist yet for any {paperFilter} topic — extraction will not work. Upload and
+                      extract revision notes first; sample questions only match against chunks that already exist,
+                      they never create new ones.
                     </p>
                   </div>
                 )}
@@ -1008,8 +1023,8 @@ export default function AdminUploadPage() {
                     const isError = state?.status === 'error'
                     const isPaused = state?.status === 'paused'
                     const notStarted = !state
-                    const needsTopic = fileType === 'questions' && !chunkTopicId
-                    const noChunksYet = fileType === 'questions' && !!chunkTopicId && topicChunkCount === 0
+                    const needsTopic = fileType === 'questions' && paperFilter === 'all'
+                    const noChunksYet = fileType === 'questions' && paperFilter !== 'all' && topicChunkCount === 0
                     // Notes .docx files have a Contents page that must be read and confirmed
                     // (Phase 1) before Phase 2 (real extraction) is allowed to run — this is
                     // what stops TOC bullet lines from ever reaching extraction at all, rather
@@ -1065,8 +1080,8 @@ export default function AdminUploadPage() {
                               onClick={() => !blocked && extractChunks(f.file.name, f.source_material_id!)}
                               disabled={blocked}
                               title={
-                                needsTopic ? 'Select a topic above first — sample questions match against that topic\'s existing chunks'
-                                : noChunksYet ? 'This topic has no knowledge chunks yet — extract revision notes for it first'
+                                needsTopic ? 'Select FLK1 or FLK2 above first — needed to auto-match each question to its topic'
+                                : noChunksYet ? `No knowledge chunks exist yet for any ${paperFilter} topic — extract revision notes first`
                                 : undefined
                               }
                               style={{
@@ -1084,7 +1099,7 @@ export default function AdminUploadPage() {
                               }}
                               className={blocked ? '' : 'hover:brightness-110 active:scale-[0.98] transition-all duration-150'}
                             >
-                              {needsTopic ? 'Select a topic first' : noChunksYet ? 'No chunks for this topic' : 'Extract chunks →'}
+                              {needsTopic ? 'Select FLK1 or FLK2 first' : noChunksYet ? 'No chunks for this paper yet' : 'Extract chunks →'}
                             </button>
                           )}
                           {isDone && (
@@ -1512,7 +1527,7 @@ export default function AdminUploadPage() {
             <Step n={2} text={
               fileType === 'notes'
                 ? 'Extract Chunks — Claude reads each section and extracts every distinct legal rule as an atomic chunk.'
-                : 'Match to Knowledge Graph — Claude matches each MCQ to an existing chunk for the selected topic and records style/difficulty signal. Requires notes already extracted for that topic; never creates new chunks.'
+                : 'Match to Knowledge Graph — pick FLK1 or FLK2 only. Claude auto-detects each question\'s topic, matches it to an existing chunk, and records style/difficulty signal. Requires notes already extracted; never creates new chunks.'
             } />
             <Step n={3} text="Generate Questions — from the Knowledge Graph, approve chunks and generate questions. Every question is cited to its source chunk." />
           </div>

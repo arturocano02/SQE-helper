@@ -1404,6 +1404,11 @@ export interface ChunkMatch {
   prompt: string | null
   options: { label: string; text: string }[] | null
   correct_answer: string | null
+  /** Set only by matchQuestionsToChunksAutoTopic — the topic this question was classified
+   *  into, used when no single topic was chosen for the whole upload (the admin picked just a
+   *  paper, FLK1/FLK2, and each question's topic is detected individually). Null on the
+   *  fixed-topic path, where the caller already knows which topic every question belongs to. */
+  resolved_topic_id: string | null
 }
 
 /** Result of a single batched MATCH call — mirrors BatchExtractionResult but for matches. */
@@ -1683,6 +1688,7 @@ async function matchQuestionBatchToChunks(
       prompt: isInsertable ? m.prompt!.trim() : null,
       options: isInsertable ? cleanOptions : null,
       correct_answer: isInsertable ? correctLabel : null,
+      resolved_topic_id: null,
     }
   })
 }
@@ -1784,6 +1790,214 @@ export async function matchQuestionsToChunks(
   })
 
   return { matches: newMatches, totalUnits: batches.length, unitsDone, done, matchedCount, unmatchedCount }
+}
+
+/** Same splitting rules as splitIntoQuestionBatches, but returns one block per individual
+ *  question rather than grouping several into a fixed-size batch — matchQuestionsToChunksAutoTopic
+ *  needs per-question granularity so each question can be classified to its own topic before any
+ *  matching happens (a fixed-size batch could otherwise straddle a topic boundary). */
+function splitIntoIndividualQuestionBlocks(text: string): string[] {
+  const questionSplits = [...text.matchAll(/\n(?=Question\s+\d{1,3}\s*\n)/gi)]
+  if (questionSplits.length >= 5) {
+    const positions = questionSplits.map(m => m.index!)
+    positions.push(text.length)
+    return positions.slice(0, -1).map((p, i) => text.slice(p, positions[i + 1]).trim()).filter(b => b.length > 50)
+  }
+
+  const numbered = [...text.matchAll(/\n(?=\d{1,3}[\.\)]\s)/g)]
+  if (numbered.length >= 5) {
+    const positions = numbered.map(m => m.index!)
+    positions.push(text.length)
+    return positions.slice(0, -1).map((p, i) => text.slice(p, positions[i + 1]).trim()).filter(b => b.length > 50)
+  }
+
+  const paragraphs = text.split(/\n{2,}/).filter(p => p.trim().length > 20)
+  const blocks: string[] = []
+  let current = ''
+  for (const para of paragraphs) {
+    if (current.length + para.length + 2 > 4000 && current.length > 0) {
+      blocks.push(current.trim())
+      current = para
+    } else {
+      current = current ? current + '\n\n' + para : para
+    }
+  }
+  if (current.trim().length > 20) blocks.push(current.trim())
+  return blocks.length > 0 ? blocks : [text]
+}
+
+export interface PaperTopicOption {
+  id: string
+  slug: string
+  name: string
+}
+
+/** Cheap Haiku call — classifies ONE sample question to exactly one topic slug from the paper
+ *  it belongs to. Deliberately separate from the real matching call (which is the expensive
+ *  Sonnet call carrying the full candidate-chunk list): this only needs the question text
+ *  itself, so it stays small and can run in parallel across a whole slice of questions before
+ *  any matching happens. Mirrors classifyTopicSlugWithAI's pattern for notes-mode chapters. */
+async function classifyQuestionTopic(
+  client: Anthropic,
+  questionText: string,
+  paperTopics: PaperTopicOption[],
+): Promise<string | null> {
+  try {
+    const slugList = paperTopics.map(t => `${t.slug} (${t.name})`).join(', ')
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 20,
+      system: `You classify a single UK SQE1 sample exam question by which legal topic it tests. Choose exactly one slug from this list: ${slugList}\n\nReturn ONLY the slug, nothing else.`,
+      messages: [{ role: 'user', content: questionText.slice(0, 1800) }],
+    })
+    const raw = message.content[0].type === 'text' ? message.content[0].text.trim().toLowerCase() : ''
+    return paperTopics.some(t => t.slug === raw) ? raw : null
+  } catch (err) {
+    console.error('[chunk-extractor] question topic classification failed:', err)
+    return null
+  }
+}
+
+// Questions per request in the auto-topic path. Each question costs one cheap Haiku
+// classification call (parallelized) plus its share of the heavier Sonnet matching call
+// (amortized across however many questions land in the same topic group) — kept modest so a
+// request comfortably finishes well inside maxDuration even on a slow connection.
+const AUTO_TOPIC_BATCH_SIZE = 12
+
+const EMPTY_MATCH: ChunkMatch = {
+  chunk_ids: [], exact_source_quote: null, context_text: null, inferred_difficulty: null,
+  difficulty_reason: null, matched: false, prompt: null, options: null, correct_answer: null,
+  resolved_topic_id: null,
+}
+
+/**
+ * Match a sample MCQ paper against EXISTING knowledge chunks, auto-detecting which topic each
+ * individual question belongs to instead of requiring the admin to pick one topic for the whole
+ * file — needed because a single "FLK1 sample questions" PDF commonly mixes questions from all
+ * 5 FLK1 topics together. For each question: classify its topic (cheap Haiku call), then match
+ * it against that topic's existing chunks only (same Sonnet call matchQuestionBatchToChunks
+ * already uses for the fixed-topic path) — never against another topic's chunks, and never
+ * creating new chunks, same guarantee as the fixed-topic path.
+ *
+ * Resume granularity is the whole slice (AUTO_TOPIC_BATCH_SIZE questions), not the individual
+ * question or topic-group — classification can interleave topics within a slice, so a partial
+ * checkpoint partway through would risk silently skipping questions on resume. Persisting once
+ * per slice means a mid-slice crash only ever risks re-doing that one bounded slice, never
+ * losing or skipping a question.
+ */
+export async function matchQuestionsToChunksAutoTopic(
+  rawText: string,
+  paperTopics: PaperTopicOption[],
+  candidatesByTopicId: Map<string, ChunkCandidate[]>,
+  onProgress: (p: ExtractionProgress) => void,
+  onMatches?: (matches: ChunkMatch[]) => Promise<void>,
+  range?: { offset: number; limit: number },
+  onUnitDone?: (absoluteIndex: number) => Promise<void>,
+): Promise<BatchMatchResult> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+  if (paperTopics.length === 0) {
+    onProgress({ stage: 'error', message: 'No topics found for this paper.', error: 'No topics' })
+    throw new Error('No topics for this paper')
+  }
+
+  onProgress({ stage: 'parsing', message: 'Locating answer key and splitting into individual questions…' })
+
+  const mergedText = mergeAnswerKeySection(rawText)
+  const blocks = splitIntoIndividualQuestionBlocks(mergedText)
+
+  if (blocks.length === 0) {
+    onProgress({ stage: 'error', message: 'No questions found.', error: 'No questions detected' })
+    throw new Error('No questions found')
+  }
+
+  const offset = range?.offset ?? 0
+  const limit = range?.limit ?? blocks.length
+  const slice = blocks.slice(offset, offset + limit)
+
+  onProgress({
+    stage: 'parsing',
+    message: `Found ${blocks.length} questions — classifying topic for ${slice.length} of them…`,
+    sections_total: blocks.length,
+    sections_done: offset,
+    chunks_found: 0,
+  })
+
+  // Classify every question in this slice in parallel — each call is small/cheap (Haiku, 20
+  // output tokens), so doing them concurrently rather than sequentially keeps this from being
+  // the slow part of the request.
+  const slugs = await Promise.all(slice.map(b => classifyQuestionTopic(client, b, paperTopics)))
+
+  // Group this slice's questions by resolved topic so the actual matching call (which resends
+  // the full candidate list every time) is amortized across several questions at once, same as
+  // the fixed-topic path — rather than paying that cost per individual question.
+  const groups = new Map<string, { topic: PaperTopicOption | null; blocks: string[] }>()
+  for (let i = 0; i < slice.length; i++) {
+    const topic = slugs[i] ? paperTopics.find(t => t.slug === slugs[i]) ?? null : null
+    const key = topic?.id ?? '__unresolved__'
+    if (!groups.has(key)) groups.set(key, { topic, blocks: [] })
+    groups.get(key)!.blocks.push(slice[i])
+  }
+
+  const newMatches: ChunkMatch[] = []
+  let processed = 0
+
+  for (const { topic, blocks: groupBlocks } of groups.values()) {
+    const candidates = topic ? (candidatesByTopicId.get(topic.id) ?? []) : []
+    const joined = groupBlocks.join('\n\n---\n\n')
+
+    onProgress({
+      stage: 'extracting',
+      message: topic
+        ? `Matching ${groupBlocks.length} question(s) classified under "${topic.name}"…`
+        : `${groupBlocks.length} question(s) couldn't be confidently classified to a topic — flagging unmatched…`,
+      sections_total: blocks.length,
+      sections_done: offset + processed,
+      chunks_found: newMatches.length,
+    })
+
+    let matches: ChunkMatch[]
+    try {
+      // Still run the match call even with zero candidates (unresolved topic, or a resolved
+      // topic that has no chunks yet) — Claude can often still recover the question's
+      // prompt/options for manual triage even though chunk_ids will always come back empty.
+      matches = await matchQuestionBatchToChunks(client, joined, offset + processed, topic?.name ?? 'SQE1', candidates)
+    } catch (err) {
+      console.error('[chunk-extractor] auto-topic match batch failed:', err)
+      matches = groupBlocks.map(() => ({ ...EMPTY_MATCH }))
+    }
+
+    // matchQuestionBatchToChunks is supposed to return one entry per question sent, in order —
+    // but that's Claude's output, never 100% guaranteed to line up, so pad/truncate defensively
+    // rather than letting a length mismatch misattribute one question's match to another's.
+    while (matches.length < groupBlocks.length) matches.push({ ...EMPTY_MATCH })
+    matches = matches.slice(0, groupBlocks.length).map(m => ({ ...m, resolved_topic_id: topic?.id ?? null }))
+
+    newMatches.push(...matches)
+    if (onMatches && matches.length > 0) await onMatches(matches)
+    processed += groupBlocks.length
+  }
+
+  // Single checkpoint for the whole slice — see the function doc comment for why this can't
+  // safely be done per-group.
+  if (onUnitDone) await onUnitDone(offset + slice.length)
+
+  const unitsDone = Math.min(offset + slice.length, blocks.length)
+  const done = unitsDone >= blocks.length
+  const matchedCount = newMatches.filter(m => m.matched).length
+  const unmatchedCount = newMatches.length - matchedCount
+
+  onProgress({
+    stage: done ? 'done' : 'extracting',
+    message: done
+      ? `Done — ${unitsDone} questions processed`
+      : `Batch complete — ${unitsDone} / ${blocks.length} questions processed so far`,
+    sections_total: blocks.length,
+    sections_done: unitsDone,
+    chunks_found: newMatches.length,
+  })
+
+  return { matches: newMatches, totalUnits: blocks.length, unitsDone, done, matchedCount, unmatchedCount }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
