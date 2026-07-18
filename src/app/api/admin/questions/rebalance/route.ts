@@ -15,6 +15,7 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import type { MCQOption } from '@/types/database'
+import { explanationReferencesLetter } from '@/lib/letterReference'
 
 async function requireAdmin() {
   const supabase = await createClient()
@@ -73,17 +74,23 @@ export async function POST() {
   const admin = createAdminClient()
   const { data: rows, error } = await admin
     .from('questions')
-    .select('id, options, correct_answer')
+    .select('id, options, correct_answer, explanation')
     .eq('type', 'mcq')
     .eq('correct_answer', 'A')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!rows || rows.length === 0) return NextResponse.json({ updated: 0, skipped: 0 })
+  if (!rows || rows.length === 0) return NextResponse.json({ updated: 0, skipped: 0, letterReferenceSkipped: 0 })
 
   let updated = 0
   let skipped = 0
+  let letterReferenceSkipped = 0
 
   for (const row of rows) {
+    // Reshuffling would desync any letter baked into the explanation (e.g. "Option A is
+    // correct") from the new correct_answer. Leave these for manual review/rewrite instead
+    // of silently introducing a mismatch — see /api/admin/questions/fix-letter-mismatches.
+    if (explanationReferencesLetter(row.explanation)) { letterReferenceSkipped++; continue }
+
     const result = reshuffle((row.options ?? []) as MCQOption[])
     if (!result) { skipped++; continue }
     const { error: updErr } = await admin
@@ -94,5 +101,5 @@ export async function POST() {
     else updated++
   }
 
-  return NextResponse.json({ updated, skipped, total: rows.length })
+  return NextResponse.json({ updated, skipped, letterReferenceSkipped, total: rows.length })
 }

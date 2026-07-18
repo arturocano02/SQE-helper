@@ -37,6 +37,7 @@ MCQ rules:
 - The question should be self-contained — include enough scenario/context in the prompt
 - Explanation: why the correct answer is right AND specifically why each wrong option fails
 - Vary which letter (A–E) holds the correct answer from question to question — do not default to A. Place the correct answer at a position you choose deliberately so that across many questions the correct letter is evenly spread across A, B, C, D and E.
+- CRITICAL: in the explanation, NEVER refer to an option by its letter (no "Option A", "B is correct", "(C)", etc.). The letters you assign here get randomly reshuffled after generation, so any letter you write in the explanation will very likely be wrong after reshuffling. Instead, always refer to options by their content — e.g. "The answer stating that notice must be given in writing is correct because..." or "The option suggesting a 14-day limit is wrong because..."
 
 Difficulty calibration:
 - easy: pure rule recall — "What is the test for X?" or "Under which section does Y apply?"
@@ -77,6 +78,11 @@ const VALID_SLUGS = new Set([
 // matching by text would silently mis-tag the correct answer if two options ever happened to
 // share identical wording. Fisher-Yates on the indices gives a uniform 1-in-5 chance of landing
 // on any letter A-E, so across many questions the correct answer isn't predictably "always A".
+//
+// IMPORTANT: this reassigns letters AFTER Claude has already written the explanation, so the
+// explanation text must never reference options by letter (see GENERATE_FROM_CHUNK_SYSTEM's
+// "CRITICAL" rule) — otherwise a leftover "Option B is correct" in the explanation would no
+// longer match whatever letter B ends up as after this shuffle.
 function shuffleCorrectAnswer(q: GeneratedQuestion): GeneratedQuestion {
   if (!q.options || q.options.length !== 5 || !q.correct_answer) return q
   const correctIndex = q.options.findIndex(o => o.label === q.correct_answer)
