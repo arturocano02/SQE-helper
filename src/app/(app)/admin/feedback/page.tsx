@@ -8,6 +8,7 @@ interface FeedbackRow {
   id: string
   user_id: string | null
   question_id: string | null
+  knowledge_chunk_id: string | null
   feedback_type: FeedbackType
   description: string
   status: FeedbackStatus
@@ -16,6 +17,7 @@ interface FeedbackRow {
   questions?: {
     prompt: string
     topic_id: string | null
+    knowledge_chunk_id: string | null
     topics?: { name: string } | null
   } | null
 }
@@ -330,6 +332,16 @@ export default function AdminFeedbackPage() {
                         />
                       </div>
 
+                      {/* Fix source knowledge chunk */}
+                      {(item.knowledge_chunk_id || item.questions?.knowledge_chunk_id) && (
+                        <ChunkFixPanel
+                          feedbackId={item.id}
+                          questionId={item.question_id}
+                          currentAdminNote={noteVal}
+                          onApplied={load}
+                        />
+                      )}
+
                       {/* Actions */}
                       <div className="flex items-center gap-2 flex-wrap">
                         {STATUS_OPTIONS.filter(s => s !== item.status).map(s => (
@@ -378,5 +390,218 @@ export default function AdminFeedbackPage() {
         )}
       </div>
     </main>
+  )
+}
+
+interface Suggestion {
+  chunk_id: string
+  topic_name: string | null
+  current: { rule_text: string; context_text: string | null }
+  suggested: { rule_text: string; context_text: string | null }
+  reasoning: string
+  flagged_question_id: string | null
+}
+
+/**
+ * Closes the feedback → knowledge chunk loop inline in the feedback list: draft a
+ * correction with Claude (grounded in the feedback + this admin's own note), let the
+ * admin edit it, then apply it to the chunk and archive the flagged question in one action.
+ */
+function ChunkFixPanel({
+  feedbackId,
+  questionId,
+  currentAdminNote,
+  onApplied,
+}: {
+  feedbackId: string
+  questionId: string | null
+  currentAdminNote: string
+  onApplied: () => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null)
+  const [ruleText, setRuleText] = useState('')
+  const [contextText, setContextText] = useState('')
+  const [archiveQuestion, setArchiveQuestion] = useState(true)
+  const [applying, setApplying] = useState(false)
+  const [applied, setApplied] = useState(false)
+
+  async function requestSuggestion() {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/admin/chunks/suggest-fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback_id: feedbackId }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Failed to draft a fix')
+      setSuggestion(json)
+      setRuleText(json.suggested.rule_text)
+      setContextText(json.suggested.context_text ?? '')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to draft a fix')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function apply() {
+    if (!suggestion) return
+    setApplying(true)
+    try {
+      await fetch('/api/admin/chunks/apply-fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chunk_id: suggestion.chunk_id,
+          rule_text: ruleText,
+          context_text: contextText || null,
+          feedback_id: feedbackId,
+          admin_note: currentAdminNote,
+          archive_question_id: archiveQuestion ? (suggestion.flagged_question_id ?? questionId ?? undefined) : undefined,
+        }),
+      })
+      setApplied(true)
+      onApplied()
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  if (applied) {
+    return (
+      <div className="p-3 rounded-lg" style={{ background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
+        <p className="font-sans text-sm" style={{ color: 'var(--status-correct)' }}>
+          ✓ Chunk updated and feedback marked actioned.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className="p-4 rounded-lg space-y-3"
+      style={{ background: 'rgba(200,146,42,0.05)', border: '1px solid rgba(200,146,42,0.20)' }}
+    >
+      <div className="flex items-center justify-between">
+        <p className="font-sans text-xs font-medium" style={{ color: 'var(--amber-text)' }}>
+          Fix source knowledge chunk
+        </p>
+        {!suggestion && (
+          <button
+            onClick={requestSuggestion}
+            disabled={loading}
+            className="font-sans text-xs px-3 py-1.5 rounded transition"
+            style={{
+              background: 'var(--amber)',
+              color: '#0A0A08',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? 'Drafting fix…' : 'Suggest fix from feedback'}
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p className="font-sans text-xs" style={{ color: 'var(--status-wrong)' }}>{error}</p>
+      )}
+
+      {suggestion && (
+        <>
+          {suggestion.topic_name && (
+            <p className="font-sans text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              Topic: {suggestion.topic_name}
+            </p>
+          )}
+
+          <p className="font-sans text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+            {suggestion.reasoning}
+          </p>
+
+          <div>
+            <label className="font-sans text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+              rule_text (was: &quot;{suggestion.current.rule_text.slice(0, 80)}
+              {suggestion.current.rule_text.length > 80 ? '…' : ''}&quot;)
+            </label>
+            <textarea
+              value={ruleText}
+              onChange={e => setRuleText(e.target.value)}
+              rows={3}
+              style={{
+                width: '100%',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 8,
+                color: 'var(--text-primary)',
+                fontFamily: 'var(--font-dm-sans)',
+                fontSize: 13,
+                padding: '8px 12px',
+                resize: 'vertical',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          <div>
+            <label className="font-sans text-[11px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+              context_text (optional)
+            </label>
+            <textarea
+              value={contextText}
+              onChange={e => setContextText(e.target.value)}
+              rows={2}
+              placeholder="(none)"
+              style={{
+                width: '100%',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--surface-border)',
+                borderRadius: 8,
+                color: 'var(--text-primary)',
+                fontFamily: 'var(--font-dm-sans)',
+                fontSize: 13,
+                padding: '8px 12px',
+                resize: 'vertical',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          {(suggestion.flagged_question_id ?? questionId) && (
+            <label className="flex items-center gap-2 font-sans text-xs" style={{ color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={archiveQuestion} onChange={e => setArchiveQuestion(e.target.checked)} />
+              Archive the flagged question — it stops appearing to students immediately. Generate a replacement later from the corrected chunk.
+            </label>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={apply}
+              disabled={applying || !ruleText.trim()}
+              className="font-sans text-xs px-3 py-1.5 rounded transition"
+              style={{
+                background: 'var(--status-correct)',
+                color: '#0A0A08',
+                cursor: applying ? 'not-allowed' : 'pointer',
+                opacity: applying || !ruleText.trim() ? 0.6 : 1,
+              }}
+            >
+              {applying ? 'Applying…' : 'Apply fix to chunk'}
+            </button>
+            <button
+              onClick={() => setSuggestion(null)}
+              className="font-sans text-xs px-3 py-1.5 rounded transition"
+              style={{ background: 'var(--surface-3)', color: 'var(--text-secondary)' }}
+            >
+              Discard
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

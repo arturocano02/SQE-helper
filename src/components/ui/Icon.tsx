@@ -98,3 +98,9 @@ export const BookIcon = ({ size = 20, className = '' }: IconProps) => (
     <><path d="M4 3h10a1 1 0 0 1 1 1v13l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/></>
   )}</span>
 )
+
+export const UsersIcon = ({ size = 20, className = '' }: IconProps) => (
+  <span className={className}>{base(size,
+    <><circle cx="7" cy="7" r="2.5"/><path d="M2.5 16c0-2.485 2.015-4.5 4.5-4.5s4.5 2.015 4.5 4.5"/><circle cx="14" cy="7.5" r="2"/><path d="M12.5 11.5c1.8.2 3.2 1.7 3.5 3.5"/></>
+  )}</span>
+)

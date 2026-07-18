@@ -4,6 +4,7 @@ import type { SourceMaterial, Topic } from '@/types/database'
 import SourceMaterialRow from '@/components/admin/SourceMaterialRow'
 import BulkApproveButton from '@/components/admin/BulkApproveButton'
 import CleanupOrphansButton from '@/components/admin/CleanupOrphansButton'
+import ActivityChart from '@/components/ui/ActivityChart'
 
 export const dynamic = 'force-dynamic'
 
@@ -60,6 +61,26 @@ export default async function AdminDashboardPage() {
     admin.from('questions').select('*', { count: 'exact', head: true }).eq('type', 'flashcard').eq('status', 'approved'),
     admin.from('knowledge_chunks').select('*', { count: 'exact', head: true }).is('source_material_id', null),
   ])
+
+  // User activity widget — "active" = answered ≥1 question in the window. See
+  // /api/admin/analytics/overview for the same logic (this dashboard queries directly
+  // via the admin client instead of hitting its own API route over HTTP).
+  async function distinctActiveUsers(since: Date): Promise<number> {
+    const { data } = await admin.from('question_history').select('user_id').gte('answered_at', since.toISOString()).limit(50000)
+    return new Set((data ?? []).map(r => r.user_id)).size
+  }
+  const now = Date.now()
+  const [activeNow, activeToday, activeWeek, activeMonth, { data: dailyActivity }] = await Promise.all([
+    distinctActiveUsers(new Date(now - 15 * 60 * 1000)),
+    distinctActiveUsers(new Date(now - 24 * 60 * 60 * 1000)),
+    distinctActiveUsers(new Date(now - 7 * 24 * 60 * 60 * 1000)),
+    distinctActiveUsers(new Date(now - 30 * 24 * 60 * 60 * 1000)),
+    admin.rpc('admin_daily_activity', { days_back: 30 }),
+  ])
+  const dailyChartPoints = (dailyActivity ?? []).map((d: { day: string; active_users: number }) => ({
+    label: new Date(d.day).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+    value: d.active_users,
+  }))
 
   const { data: qPerTopic } = await admin
     .from('questions')
@@ -219,6 +240,31 @@ export default async function AdminDashboardPage() {
               sub={`last ${recent.length} answers`}
               accent
             />
+          </div>
+        </section>
+
+        {/* User activity */}
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-serif text-xl" style={{ color: 'var(--text-primary)' }}>Users &amp; Activity</h2>
+            <Link href="/admin/users" className="font-sans text-sm" style={{ color: 'var(--amber-text)' }}>
+              View all users →
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <StatCard label="Active now" value={activeNow} sub="last 15 min" accent />
+            <StatCard label="Today" value={activeToday} sub="last 24h" />
+            <StatCard label="This week" value={activeWeek} sub="last 7 days" />
+            <StatCard label="This month" value={activeMonth} sub="last 30 days" />
+          </div>
+          <div
+            className="p-5 card-glow"
+            style={{ background: 'var(--surface-1)', border: '1px solid var(--surface-border)', borderRadius: 12 }}
+          >
+            <p className="font-sans text-xs uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
+              Daily active users — last 30 days
+            </p>
+            <ActivityChart points={dailyChartPoints} emptyLabel="Not enough activity yet to chart." />
           </div>
         </section>
 

@@ -67,7 +67,7 @@ export async function GET(request: Request) {
   const admin = createAdminClient()
   let query = admin
     .from('feedback')
-    .select('*, questions(prompt, topic_id, topics(name))')
+    .select('*, questions(prompt, topic_id, knowledge_chunk_id, topics(name))')
     .order('created_at', { ascending: false })
     .limit(200)
 
