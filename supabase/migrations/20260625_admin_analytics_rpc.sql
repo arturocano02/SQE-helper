@@ -4,6 +4,12 @@
 -- question_history/sessions grow. Called only from admin API routes via the service-role
 -- client, which already bypasses RLS — SECURITY DEFINER is set anyway so these are safe
 -- to expose more broadly later without re-auditing RLS.
+--
+-- Every table reference is schema-qualified (public.sessions, not sessions) because
+-- LANGUAGE SQL function bodies are name-resolved using the SQL editor session's active
+-- search_path at CREATE time, not the function's own `SET search_path = public` clause
+-- (that only applies once the function is later called) — an unqualified name fails to
+-- resolve if the editor session wasn't on the public schema when this ran.
 
 create or replace function admin_user_stats()
 returns table (
@@ -23,10 +29,10 @@ as $$
     coalesce(h.questions_answered, 0) as questions_answered,
     coalesce(h.correct_answered, 0) as correct_answered,
     greatest(s.last_session, h.last_answer) as last_active
-  from profiles p
+  from public.profiles p
   left join (
     select user_id, count(*) as sessions_completed, max(started_at) as last_session
-    from sessions
+    from public.sessions
     where is_complete = true
     group by user_id
   ) s on s.user_id = p.id
@@ -36,7 +42,7 @@ as $$
       count(*) as questions_answered,
       count(*) filter (where was_correct = true) as correct_answered,
       max(answered_at) as last_answer
-    from question_history
+    from public.question_history
     group by user_id
   ) h on h.user_id = p.id;
 $$;
@@ -58,7 +64,7 @@ as $$
     date_trunc('day', answered_at)::date as day,
     count(distinct user_id) as active_users,
     count(*) as answers
-  from question_history
+  from public.question_history
   where answered_at >= now() - (days_back || ' days')::interval
   group by 1
   order by 1;
