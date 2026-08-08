@@ -10,7 +10,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(node -e ' *)",
-      "Bash(node -e \"const fs=require\\('fs'\\);const p=JSON.parse\\(fs.readFileSync\\('/dev/stdin','utf8'\\)\\);console.log\\(p.main,p.exports\\)\")"
+      "Bash(node -e \"const fs=require\\('fs'\\);const p=JSON.parse\\(fs.readFileSync\\('/dev/stdin','utf8'\\)\\);console.log\\(p.main,p.exports\\)\")",
+      "Bash(git push *)"
     ]
   }
 }
